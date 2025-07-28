@@ -7,11 +7,14 @@ import {
   Trash2, 
   FileText,
   GitBranch,
-  Settings
+  Settings,
+  Book
 } from 'lucide-react'
 import { useChartStore } from '@/store/chart-store'
 import { ExportMenu } from './export-menu'
 import { LayoutToggle } from './layout-toggle'
+import { TutorialPanel } from './tutorial-panel'
+import { useState } from 'react'
 
 export function Header() {
   const { 
@@ -23,6 +26,8 @@ export function Header() {
     toggleSettings,
     history 
   } = useChartStore()
+  
+  const [isTutorialOpen, setIsTutorialOpen] = useState(false)
 
   return (
     <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6">
@@ -59,6 +64,17 @@ export function Header() {
       {/* 右侧操作按钮 */}
       <div className="flex items-center space-x-3">
         <LayoutToggle />
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setIsTutorialOpen(true)}
+          className="flex items-center space-x-2"
+          title="Mermaid教程"
+        >
+          <Book className="w-4 h-4" />
+          <span>教程</span>
+        </Button>
 
         <Button
           variant="outline"
@@ -110,6 +126,12 @@ export function Header() {
 
         <ExportMenu />
       </div>
+      
+      {/* 教程面板 */}
+      <TutorialPanel 
+        isOpen={isTutorialOpen} 
+        onClose={() => setIsTutorialOpen(false)} 
+      />
     </header>
   )
 }
