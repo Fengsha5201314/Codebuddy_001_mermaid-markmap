@@ -1,17 +1,155 @@
-import { defineConfig } from 'vite'
+import { createReadStream } from 'node:fs'
+import { cp, stat } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import path from 'node:path'
+import { fileURLToPath, URL } from 'node:url'
+import { defineConfig } from 'vitest/config'
+import { loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import path from 'path'
+import { createAiMiddleware, type AiServiceConfig } from './server/ai-service.ts'
 
-// https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
+const drawioRoot = fileURLToPath(new URL('./vendor/drawio', import.meta.url))
+
+const drawioMimeTypes: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.gif': 'image/gif',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ttf': 'font/ttf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.xml': 'application/xml; charset=utf-8',
+}
+
+function drawioAssetsPlugin(): Plugin {
+  let shouldCopyForBuild = false
+  const serveDrawio = async (request: IncomingMessage, response: ServerResponse, next: () => void) => {
+    const url = new URL(request.url || '/', 'http://drawio.local')
+    if (!url.pathname.startsWith('/drawio')) {
+      next()
+      return
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.statusCode = 405
+      response.end('Method Not Allowed')
+      return
+    }
+
+    let relativePath = ''
+    try {
+      relativePath = decodeURIComponent(url.pathname.slice('/drawio'.length)).replace(/^\/+/, '') || 'index.html'
+    } catch {
+      response.statusCode = 400
+      response.end('Bad Request')
+      return
+    }
+    const requestedPath = path.resolve(drawioRoot, relativePath)
+    if (requestedPath !== drawioRoot && !requestedPath.startsWith(`${drawioRoot}${path.sep}`)) {
+      response.statusCode = 403
+      response.end('Forbidden')
+      return
+    }
+
+    try {
+      const file = await stat(requestedPath)
+      const finalPath = file.isDirectory() ? path.join(requestedPath, 'index.html') : requestedPath
+      const finalFile = await stat(finalPath)
+      if (!finalFile.isFile()) throw new Error('Not a file')
+      response.statusCode = 200
+      response.setHeader('Content-Type', drawioMimeTypes[path.extname(finalPath).toLowerCase()] || 'application/octet-stream')
+      response.setHeader('Cache-Control', relativePath === 'index.html' ? 'no-cache' : 'public, max-age=31536000, immutable')
+      response.setHeader('X-Content-Type-Options', 'nosniff')
+      if (request.method === 'HEAD') {
+        response.end()
+        return
+      }
+      createReadStream(finalPath).pipe(response)
+    } catch {
+      response.statusCode = 404
+      response.end('Not Found')
+    }
+  }
+
+  return {
+    name: 'fengsha-bundled-drawio',
+    configResolved(config) {
+      shouldCopyForBuild = config.command === 'build'
     },
-  },
-  server: {
-    port: 3000,
-    open: true
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => { void serveDrawio(request, response, next) })
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((request, response, next) => { void serveDrawio(request, response, next) })
+    },
+    async closeBundle() {
+      if (!shouldCopyForBuild) return
+      await cp(drawioRoot, fileURLToPath(new URL('./dist/drawio', import.meta.url)), { recursive: true })
+    },
+  }
+}
+
+function aiApiPlugin(config: AiServiceConfig): Plugin {
+  const middleware = createAiMiddleware(config)
+  return {
+    name: 'mermaid-workbench-ai-api',
+    configureServer(server) {
+      server.middlewares.use('/api/ai', middleware)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use('/api/ai', middleware)
+    },
+  }
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  return {
+    plugins: [
+      react(),
+      drawioAssetsPlugin(),
+      aiApiPlugin({
+        settingsFile: env.AI_SETTINGS_FILE || fileURLToPath(new URL('./.data/ai-providers.json', import.meta.url)),
+        providers: {
+          cpa: {
+            apiKey: env.CPA_API_KEY,
+            baseUrl: env.CPA_BASE_URL,
+          },
+          deepseek: {
+            apiKey: env.DEEPSEEK_API_KEY,
+            baseUrl: env.DEEPSEEK_BASE_URL,
+          },
+          custom: {
+            apiKey: env.CUSTOM_AI_API_KEY,
+            baseUrl: env.CUSTOM_AI_BASE_URL,
+            label: env.CUSTOM_AI_LABEL,
+          },
+        },
+      }),
+    ],
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
+    },
+    optimizeDeps: {
+      entries: ['index.html'],
+    },
+    build: {
+      target: 'es2022',
+      sourcemap: false,
+    },
+    server: {
+      watch: {
+        ignored: ['**/vendor/drawio/**'],
+      },
+    },
+    test: {
+      environment: 'jsdom',
+    },
   }
 })

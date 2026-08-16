@@ -1,0 +1,10 @@
+Bundled diagram editor: draw.io 31.1.8
+Source: https://github.com/jgraph/drawio/releases/tag/v31.1.8
+Release asset: https://github.com/jgraph/drawio/releases/download/v31.1.8/draw.war
+Release SHA-256: 46389BD60810F9775CD463C9EFF4F4F8335F10926D613B0606AD4E978F46D49B
+License: Apache License 2.0 (see LICENSE in this directory)
+
+The editor is bundled unmodified as an isolated third-party runtime. Fengsha
+Diagram Workbench communicates with it through draw.io's JSON embed protocol.
+The draw.io name and trademarks belong to their respective owners and do not
+imply affiliation with or endorsement of Fengsha Diagram Workbench.

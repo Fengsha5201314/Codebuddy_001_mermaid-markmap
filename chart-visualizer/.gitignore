@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-electron
+release
+.vite
+.pnpm-store
+.artifacts
+test-results
+playwright-report
+.playwright-cli
+output/playwright
+*.local
+*.tsbuildinfo
+.data/

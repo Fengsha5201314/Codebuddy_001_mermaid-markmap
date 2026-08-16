@@ -1,0 +1,73 @@
+import type { DiagramTheme } from '@/types'
+
+export const diagramThemes: DiagramTheme[] = [
+  {
+    id: 'paper',
+    name: '专业白纸',
+    description: '适合汇报、文档和打印',
+    mermaidTheme: 'base',
+    canvas: '#f7f8fa',
+    surface: '#ffffff',
+    text: '#172033',
+    primary: '#2864dc',
+    secondary: '#eaf0ff',
+    line: '#64748b',
+    note: '#fff5d6',
+  },
+  {
+    id: 'blueprint',
+    name: '技术蓝图',
+    description: '面向系统与云架构设计',
+    mermaidTheme: 'base',
+    canvas: '#eef4f8',
+    surface: '#f8fbfd',
+    text: '#102b45',
+    primary: '#0b6e99',
+    secondary: '#d7eff8',
+    line: '#39718d',
+    note: '#dff3ec',
+  },
+  {
+    id: 'executive',
+    name: '高管汇报',
+    description: '克制、清晰、强调决策节点',
+    mermaidTheme: 'neutral',
+    canvas: '#f6f2ea',
+    surface: '#fffdf8',
+    text: '#26241f',
+    primary: '#a84d2f',
+    secondary: '#f1dfd4',
+    line: '#6f675e',
+    note: '#eee6c8',
+  },
+  {
+    id: 'forest',
+    name: '运营绿洲',
+    description: '适合运营流程与可持续主题',
+    mermaidTheme: 'forest',
+    canvas: '#eef4ef',
+    surface: '#fbfdf9',
+    text: '#173324',
+    primary: '#2b7752',
+    secondary: '#dcebdd',
+    line: '#4d725f',
+    note: '#f1edc9',
+  },
+  {
+    id: 'midnight',
+    name: '深夜控制台',
+    description: '适合技术演示和大屏展示',
+    mermaidTheme: 'dark',
+    canvas: '#0c1522',
+    surface: '#111f30',
+    text: '#e7eef7',
+    primary: '#65b8ff',
+    secondary: '#183a56',
+    line: '#86a9c4',
+    note: '#483f24',
+  },
+]
+
+export function getDiagramTheme(id: string): DiagramTheme {
+  return diagramThemes.find((theme) => theme.id === id) ?? diagramThemes[0]
+}

@@ -1,0 +1,53 @@
+name: 发布风沙桌面版
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: 构建 Windows 安装包
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: chart-visualizer
+
+    steps:
+      - name: 获取源码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: chart-visualizer/pnpm-lock.yaml
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 校验标签与软件版本
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tagVersion = "${{ github.ref_name }}" -replace '^v', ''
+          if ($packageVersion -ne $tagVersion) {
+            throw "标签版本 $tagVersion 与 package.json 版本 $packageVersion 不一致"
+          }
+
+      - name: 测试
+        run: pnpm test
+
+      - name: 构建并发布安装包
+        run: pnpm desktop:publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
