@@ -37,7 +37,10 @@ function triggerDownload(data: string, fileName: string, mime: string) {
     anchor.href = URL.createObjectURL(new Blob([data], { type: mime }))
   }
   anchor.download = fileName
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
   anchor.click()
+  anchor.remove()
   if (anchor.href.startsWith('blob:')) window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1000)
 }
 

@@ -15,6 +15,11 @@ function downloadBlob(blob: Blob, fileName: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
+/** JPEG has no alpha channel; transparent pixels would otherwise render black. */
+export function normalizeExportBackground(format: ExportOptions['format'], background: string): string {
+  return format === 'jpeg' && background === 'transparent' ? 'white' : background
+}
+
 const SVG_PRESENTATION_PROPERTIES = [
   'fill',
   'fill-opacity',
@@ -239,7 +244,8 @@ export async function exportDiagram(
   }
 
   const rasterFormat = options.format === 'png' || options.format === 'jpeg'
-  const svg = prepareSvgForExport(result, options.padding, options.background, rasterFormat)
+  const background = normalizeExportBackground(options.format, options.background)
+  const svg = prepareSvgForExport(result, options.padding, background, rasterFormat)
   const width = result.width + options.padding * 2
   const height = result.height + options.padding * 2
 

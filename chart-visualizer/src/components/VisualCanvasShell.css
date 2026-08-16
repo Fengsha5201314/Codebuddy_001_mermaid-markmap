@@ -59,8 +59,8 @@
   white-space: nowrap;
 }
 
-.visual-canvas-title-copy strong { color: var(--vc-ink); font-size: 11px; }
-.visual-canvas-title-copy small { color: #96a1af; font-size: 8px; }
+.visual-canvas-title-copy strong { color: var(--vc-ink); font-size: 12px; }
+.visual-canvas-title-copy small { color: #7d8998; font-size: 10px; }
 
 .visual-canvas-state {
   height: 22px;
@@ -72,7 +72,7 @@
   border-radius: 999px;
   color: #397458;
   background: #edf7f1;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -102,7 +102,7 @@
   justify-content: center;
   gap: 5px;
   border-radius: 5px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
   transition: color .14s ease, border-color .14s ease, background .14s ease, transform .14s ease;
@@ -202,7 +202,7 @@
 
 .visual-canvas-loading-copy { display: grid; gap: 5px; }
 .visual-canvas-loading-copy strong { color: #34475e; font-size: 13px; }
-.visual-canvas-loading-copy span { color: #8995a3; font-size: 9px; }
+.visual-canvas-loading-copy span { color: #748192; font-size: 11px; }
 
 .visual-canvas-loading-line {
   width: 150px;
@@ -253,8 +253,8 @@
 
 .visual-canvas-error > div { min-width: 0; display: grid; gap: 4px; }
 .visual-canvas-error strong { color: #603a38; font-size: 12px; }
-.visual-canvas-error p { margin: 0; overflow-wrap: anywhere; color: #8c5e5a; font-size: 9px; line-height: 1.5; }
-.visual-canvas-error small { color: #aa8581; font-size: 8px; line-height: 1.5; }
+.visual-canvas-error p { margin: 0; overflow-wrap: anywhere; color: #805653; font-size: 11px; line-height: 1.5; }
+.visual-canvas-error small { color: #926f6c; font-size: 10px; line-height: 1.5; }
 
 .visual-canvas-error button {
   height: 30px;
@@ -266,7 +266,7 @@
   border-radius: 5px;
   background: #fff;
   color: #9e4841;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -298,7 +298,7 @@
   align-items: center;
   gap: 6px;
   color: #607389;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -311,7 +311,7 @@
   box-shadow: 0 0 0 3px rgba(66, 160, 119, .11);
 }
 
-.visual-canvas-footnote p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.visual-canvas-footnote p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .visual-canvas-mobile-hint { display: none; }
 
 .visual-canvas-spin { animation: visual-canvas-spin .85s linear infinite; }

@@ -40,14 +40,34 @@ async function readError(response: Response): Promise<AiApiError> {
   )
 }
 
+function networkError(): AiApiError {
+  const desktop = typeof window !== 'undefined' && Boolean(window.fengshaDesktop)
+  return new AiApiError(
+    desktop
+      ? '无法连接本地 AI 服务。请完全退出并重新打开风沙图表工作台，然后点击“刷新状态”。'
+      : '无法连接本地 AI 服务。网页版需要通过项目服务启动，不能直接打开静态网页；请确认配套后端正在运行后重试。',
+    'AI_SERVICE_UNREACHABLE',
+    0,
+  )
+}
+
+async function fetchAi(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw networkError()
+  }
+}
+
 export async function getAiStatus(signal?: AbortSignal): Promise<AiStatus> {
-  const response = await fetch('/api/ai', { signal, headers: { Accept: 'application/json' } })
+  const response = await fetchAi('/api/ai', { signal, headers: { Accept: 'application/json' } })
   if (!response.ok) throw await readError(response)
   return response.json() as Promise<AiStatus>
 }
 
 export async function getAiModels(provider: AiProviderId, signal?: AbortSignal): Promise<string[]> {
-  const response = await fetch(`/api/ai/models?provider=${encodeURIComponent(provider)}`, {
+  const response = await fetchAi(`/api/ai/models?provider=${encodeURIComponent(provider)}`, {
     signal,
     headers: { Accept: 'application/json' },
   })
@@ -63,7 +83,7 @@ export async function updateAiProviderSettings(
   settings: AiProviderSettingsInput,
   signal?: AbortSignal,
 ): Promise<AiStatus> {
-  const response = await fetch('/api/ai/settings', {
+  const response = await fetchAi('/api/ai/settings', {
     method: 'PUT',
     signal,
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -74,7 +94,7 @@ export async function updateAiProviderSettings(
 }
 
 export async function requestAiChange(payload: AiRequest, signal?: AbortSignal): Promise<AiResponse> {
-  const response = await fetch('/api/ai', {
+  const response = await fetchAi('/api/ai', {
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -94,7 +114,7 @@ export async function requestAiChangeStream(
   onDelta: (text: string) => void,
   signal?: AbortSignal,
 ): Promise<AiResponse> {
-  const response = await fetch('/api/ai/stream', {
+  const response = await fetchAi('/api/ai/stream', {
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },

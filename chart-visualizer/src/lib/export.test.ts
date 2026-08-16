@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { copySvg, prepareSvgForExport } from '@/lib/export'
+import { copySvg, normalizeExportBackground, prepareSvgForExport } from '@/lib/export'
 
 describe('diagram export regression', () => {
+  it('uses a white background when exporting a transparent JPEG', () => {
+    expect(normalizeExportBackground('jpeg', 'transparent')).toBe('white')
+    expect(normalizeExportBackground('png', 'transparent')).toBe('transparent')
+    expect(normalizeExportBackground('jpeg', '#f7f8fa')).toBe('#f7f8fa')
+  })
+
   it('keeps the rendered light-theme node colors when preparing an SVG download', async () => {
     const result = {
       svg: `<svg id="diagram-export" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 72">

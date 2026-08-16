@@ -25,6 +25,7 @@ import {
   type AiStatus,
 } from '@/lib/ai-contract'
 import { AiApiError, getAiStatus, requestAiChangeStream } from '@/lib/ai-client'
+import { visualAiStreamPreview } from '@/lib/ai-stream-preview'
 import { renderDiagram } from '@/lib/diagram-engine'
 import { validateDrawioXml } from '@/lib/drawio-xml'
 import { EMPTY_DRAWIO_XML } from '@/lib/workspace-data'
@@ -68,12 +69,6 @@ function readableError(error: unknown): string {
   if (error instanceof DOMException && error.name === 'AbortError') return '已停止本次 AI 请求。'
   if (error instanceof AiApiError || error instanceof Error) return error.message
   return 'AI 请求失败，请稍后重试。'
-}
-
-function streamingSummary(source: string): string {
-  const match = source.match(/"summary"\s*:\s*"((?:\\.|[^"\\])*)/)
-  if (!match) return '已连接模型，正在接收内容……'
-  return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"')
 }
 
 export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpenSettings }: VisualAiAssistantProps) {
@@ -222,7 +217,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         <footer><span><ShieldCheck size={12} />{action === 'generate' ? '生成结构后转为画布' : '仅发送当前画布与指令'}</span>{running ? <button className="ai-stop-button" onClick={() => controllerRef.current?.abort('user')}><X size={14} />停止</button> : <button className="ai-run-button" onClick={() => void run()} disabled={!canSubmit}><Send size={14} />{action === 'explain' ? '开始分析' : '生成预览'}</button>}</footer>
       </section>
 
-      {running && <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite"><header><LoaderCircle size={18} className="spin" /><span><strong>{streamText ? '正在流式生成' : '正在读取画布结构'}</strong><small>{streamText ? '完成后会先校验，不会立即覆盖。' : '正在等待模型返回首段内容。'}</small></span></header>{streamText && <pre>{streamingSummary(streamText)}<i aria-hidden="true" /></pre>}</div>}
+      {running && <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite"><header><LoaderCircle size={18} className="spin" /><span><strong>{streamText ? '正在流式生成' : '正在读取画布结构'}</strong><small>{streamText ? '完成后会先校验，不会立即覆盖。' : '正在等待模型返回首段内容。'}</small></span></header>{streamText && <pre>{visualAiStreamPreview(streamText)}<i aria-hidden="true" /></pre>}</div>}
       {requestError && <div className="ai-error-card"><AlertCircle size={16} /><span><strong>本次请求没有完成</strong><small>{requestError}</small></span></div>}
 
       {candidate && <section className={`ai-result-card ${candidate.validationError ? 'invalid' : ''}`}><header><span className="ai-result-status">{candidate.validationError ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}<strong>{candidate.response.action === 'explain' ? '分析完成' : candidate.validationError ? '需要人工检查' : '已通过结构检查'}</strong></span><small>{selectedProvider?.label || providerLabels[candidate.response.provider]} · {candidate.response.model}</small></header><p className="ai-result-summary">{candidate.response.summary}</p>{candidate.response.changes.length > 0 && <ul className="ai-change-list">{candidate.response.changes.map((change, index) => <li key={`${change}-${index}`}><Check size={12} />{change}</li>)}</ul>}{candidate.validationError && <p className="ai-validation-error">{candidate.validationError}</p>}<footer className="ai-result-actions">{applied ? <span><CheckCircle2 size={13} />已应用到画布，可在版本中回退</span> : <><button onClick={() => setCandidate(null)}>忽略</button>{candidate.response.action !== 'explain' && <button className="apply" disabled={!canApply} onClick={() => { createVersion('AI 修改前'); if (candidate.mode === 'mermaid') onApplyMermaid(candidate.response.code); else onApplyXml(candidate.response.code); setApplied(true) }}><Check size={14} />确认应用</button>}</>}</footer></section>}

@@ -37,6 +37,12 @@ import {
 import { AiApiError, getAiModels, getAiStatus, updateAiProviderSettings } from '@/lib/ai-client'
 import { BUNDLED_DRAWIO_VERSION } from '@/lib/drawio-runtime'
 import {
+  canFetchProviderModels,
+  maskProviderDrafts,
+  providerDraftIsDirty,
+  type ProviderConnectionDraft,
+} from '@/lib/provider-settings'
+import {
   checkForUpdates,
   getAppInfo,
   getUpdateState,
@@ -57,14 +63,7 @@ interface SettingsDialogProps {
 
 type SettingsTab = 'workspace' | 'canvas' | 'ai' | 'data' | 'app'
 
-interface ProviderDraft {
-  label: string
-  baseUrl: string
-  apiKey: string
-  showKey: boolean
-}
-
-const emptyDrafts: Record<AiProviderId, ProviderDraft> = {
+const emptyDrafts: Record<AiProviderId, ProviderConnectionDraft> = {
   cpa: { label: 'CPA AI', baseUrl: 'https://cpa.fengsha.online/v1', apiKey: '', showKey: false },
   deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: '', showKey: false },
   custom: { label: '自定义 API', baseUrl: '', apiKey: '', showKey: false },
@@ -100,7 +99,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
   const [tab, setTab] = useState<SettingsTab>('workspace')
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
-  const [drafts, setDrafts] = useState<Record<AiProviderId, ProviderDraft>>(emptyDrafts)
+  const [drafts, setDrafts] = useState<Record<AiProviderId, ProviderConnectionDraft>>(emptyDrafts)
   const [models, setModels] = useState<Partial<Record<AiProviderId, string[]>>>({})
   const [modelSelection, setModelSelection] = useState<Partial<Record<AiProviderId, string>>>({})
   const [savingProvider, setSavingProvider] = useState<AiProviderId | null>(null)
@@ -112,28 +111,22 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
 
   const refreshStatus = async () => {
     setStatusError(null)
+    setDrafts((current) => maskProviderDrafts(current))
     try {
       const next = await getAiStatus()
       setStatus(next)
       window.dispatchEvent(new Event('ai-settings-updated'))
-      setDrafts((current) => {
-        const updated = { ...current }
-        next.providers.forEach((provider) => {
-          updated[provider.id] = {
-            ...current[provider.id],
-            label: provider.label,
-            baseUrl: provider.baseUrl,
-          }
-        })
-        return updated
-      })
+      setDrafts((current) => maskProviderDrafts(current, next.providers))
     } catch (error) {
+      setStatus(null)
       setStatusError(readableError(error))
     }
   }
 
   useEffect(() => {
     if (!open) return
+    // Never carry a revealed or typed secret across closing/reopening or a refresh.
+    setDrafts((current) => maskProviderDrafts(current))
     void refreshStatus()
   }, [open])
 
@@ -181,6 +174,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
   const saveProvider = async (provider: AiProviderId, clearApiKey = false) => {
     const draft = drafts[provider]
     setSavingProvider(provider)
+    setDrafts((current) => ({ ...current, [provider]: { ...current[provider], showKey: false } }))
     setProviderMessages((current) => ({ ...current, [provider]: undefined }))
     try {
       const next = await updateAiProviderSettings({
@@ -191,13 +185,16 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
         clearApiKey,
       })
       setStatus(next)
-      setDrafts((current) => ({ ...current, [provider]: { ...current[provider], apiKey: '', showKey: false } }))
+      window.dispatchEvent(new Event('ai-settings-updated'))
+      const savedProvider = next.providers.find((item) => item.id === provider)
+      setDrafts((current) => maskProviderDrafts(current, savedProvider ? [savedProvider] : []))
       setModels((current) => ({ ...current, [provider]: undefined }))
       setProviderMessages((current) => ({
         ...current,
         [provider]: { type: 'success', text: clearApiKey ? 'API Key 已移除。' : '连接设置已保存。' },
       }))
     } catch (error) {
+      setDrafts((current) => ({ ...current, [provider]: { ...current[provider], showKey: false } }))
       setProviderMessages((current) => ({ ...current, [provider]: { type: 'error', text: readableError(error) } }))
     } finally {
       setSavingProvider(null)
@@ -205,6 +202,14 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
   }
 
   const fetchModels = async (provider: AiProviderId) => {
+    const savedProvider = status?.providers.find((item) => item.id === provider)
+    if (!canFetchProviderModels(provider, drafts[provider], savedProvider)) {
+      setProviderMessages((current) => ({
+        ...current,
+        [provider]: { type: 'error', text: '请先保存当前连接，保存成功后才能获取模型。' },
+      }))
+      return
+    }
     setLoadingProvider(provider)
     setProviderMessages((current) => ({ ...current, [provider]: undefined }))
     try {
@@ -326,7 +331,12 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                 <button className="settings-refresh" onClick={() => void refreshStatus()}><RefreshCw size={14} />刷新状态</button>
               </header>
 
-              {statusError && <div className="settings-alert error">{statusError}</div>}
+              {statusError && (
+                <div className="settings-alert error ai-connection-error" role="alert">
+                  <span>{statusError}</span>
+                  <button type="button" onClick={() => void refreshStatus()}><RefreshCw size={13} />重试连接</button>
+                </div>
+              )}
               <div className="ai-settings-guide"><span>1</span>填写连接 <i /> <span>2</span>获取模型 <i /> <span>3</span>启用后去 AI 助手使用</div>
 
               <div className="settings-provider-stack">
@@ -338,6 +348,8 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                   const currentKey = currentModel ? aiModelKey({ provider: providerId, model: currentModel }) : ''
                   const enabled = preferences.aiEnabledModels.some((item) => aiModelKey(item) === currentKey)
                   const message = providerMessages[providerId]
+                  const providerDirty = providerDraftIsDirty(providerId, draft, provider)
+                  const modelFetchReady = canFetchProviderModels(providerId, draft, provider)
                   return (
                     <article className={`settings-provider-card ${provider?.configured ? 'configured' : ''}`} key={providerId}>
                       <header>
@@ -354,7 +366,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                           ) : <strong>{providerLabels[providerId]}</strong>}
                           <small>{providerDescriptions[providerId]}</small>
                         </div>
-                        <span className={`provider-status ${provider?.configured ? 'ready' : ''}`}><i />{provider?.configured ? '已配置' : '未配置'}</span>
+                        <span className={`provider-status ${provider?.configured && !providerDirty ? 'ready' : ''}`}><i />{providerDirty && provider?.configured ? '待保存' : provider?.configured ? '已配置' : '未配置'}</span>
                       </header>
 
                       <div className="provider-fields">
@@ -392,11 +404,17 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                         <button className="save" disabled={savingProvider !== null || !draft.baseUrl.trim()} onClick={() => void saveProvider(providerId)}>
                           {savingProvider === providerId ? <LoaderCircle size={14} className="spin" /> : <Save size={14} />}保存连接
                         </button>
-                        <button disabled={!provider?.configured || loadingProvider !== null || savingProvider !== null} onClick={() => void fetchModels(providerId)}>
+                        <button
+                          disabled={!modelFetchReady || loadingProvider !== null || savingProvider !== null}
+                          onClick={() => void fetchModels(providerId)}
+                          title={!modelFetchReady ? '先保存连接；保存成功后才能获取模型' : '读取该连接的可用模型'}
+                        >
                           {loadingProvider === providerId ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}获取模型
                         </button>
                         {provider?.configured && <button className="danger-link" onClick={() => window.confirm(`移除 ${providerLabels[providerId]} 的 API Key？`) && void saveProvider(providerId, true)}>移除 Key</button>}
                       </div>
+
+                      {!modelFetchReady && <p className="provider-step-hint">保存连接成功后，“获取模型”按钮会自动解锁。</p>}
 
                       {(options.length > 0 || models[providerId]) && (
                         <div className="provider-model-row">

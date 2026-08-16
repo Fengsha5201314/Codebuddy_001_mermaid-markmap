@@ -108,25 +108,26 @@ function aiApiPlugin(config: AiServiceConfig): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const runtimeEnv = { ...env, ...process.env }
   return {
     plugins: [
       react(),
       drawioAssetsPlugin(),
       aiApiPlugin({
-        settingsFile: env.AI_SETTINGS_FILE || fileURLToPath(new URL('./.data/ai-providers.json', import.meta.url)),
+        settingsFile: runtimeEnv.AI_SETTINGS_FILE || fileURLToPath(new URL('./.data/ai-providers.json', import.meta.url)),
         providers: {
           cpa: {
-            apiKey: env.CPA_API_KEY,
-            baseUrl: env.CPA_BASE_URL,
+            apiKey: runtimeEnv.CPA_API_KEY,
+            baseUrl: runtimeEnv.CPA_BASE_URL,
           },
           deepseek: {
-            apiKey: env.DEEPSEEK_API_KEY,
-            baseUrl: env.DEEPSEEK_BASE_URL,
+            apiKey: runtimeEnv.DEEPSEEK_API_KEY,
+            baseUrl: runtimeEnv.DEEPSEEK_BASE_URL,
           },
           custom: {
-            apiKey: env.CUSTOM_AI_API_KEY,
-            baseUrl: env.CUSTOM_AI_BASE_URL,
-            label: env.CUSTOM_AI_LABEL,
+            apiKey: runtimeEnv.CUSTOM_AI_API_KEY,
+            baseUrl: runtimeEnv.CUSTOM_AI_BASE_URL,
+            label: runtimeEnv.CUSTOM_AI_LABEL,
           },
         },
       }),

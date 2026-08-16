@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
 
@@ -7,6 +7,7 @@ const AI_ACTIONS = ['generate', 'edit', 'fix', 'explain'] as const
 const AI_PROVIDERS = ['cpa', 'deepseek', 'custom'] as const
 const MAX_UPSTREAM_RESPONSE_BYTES = 1_500_000
 const MAX_MODELS = 200
+const LOOPBACK_AI_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 type AiAction = (typeof AI_ACTIONS)[number]
 type AiDiagramEngine = 'mermaid' | 'drawio'
 export type AiProviderId = (typeof AI_PROVIDERS)[number]
@@ -43,6 +44,9 @@ export interface ProviderConfig {
 export interface AiServiceConfig {
   providers?: Partial<Record<AiProviderId, ProviderConfig>>
   settingsFile?: string
+  isApiKeyProtected?: (storedValue: string) => boolean
+  protectApiKey?: (apiKey: string) => string
+  unprotectApiKey?: (storedValue: string) => string
 }
 
 interface AiProviderSettingsPayload {
@@ -87,6 +91,9 @@ function normalizeBaseUrl(baseUrl: string): string {
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new AiServiceError('AI 服务地址必须使用 HTTP 或 HTTPS。', 'AI_CONFIG_INVALID', 400)
   }
+  if (parsed.protocol === 'http:' && !LOOPBACK_AI_HOSTS.has(parsed.hostname.toLowerCase())) {
+    throw new AiServiceError('远程 AI 服务必须使用 HTTPS；本机服务可以使用 HTTP。', 'AI_CONFIG_INVALID', 400)
+  }
   if (parsed.username || parsed.password) {
     throw new AiServiceError('AI 服务地址不能包含账号或密码。', 'AI_CONFIG_INVALID', 400)
   }
@@ -117,7 +124,15 @@ function mergeConfig(base: AiServiceConfig, stored: StoredAiSettings): AiService
     providers: Object.fromEntries(AI_PROVIDERS.map((provider) => {
       const fromBase = base.providers?.[provider] ?? {}
       const fromFile = stored.providers?.[provider] ?? {}
-      return [provider, { ...fromBase, ...fromFile }]
+      let apiKey = fromFile.apiKey
+      if (apiKey && base.unprotectApiKey) {
+        try {
+          apiKey = base.unprotectApiKey(apiKey)
+        } catch {
+          throw new AiServiceError('无法解密本地 AI 设置，请重新填写 API Key。', 'AI_SETTINGS_READ_FAILED', 500)
+        }
+      }
+      return [provider, { ...fromBase, ...fromFile, ...(apiKey !== undefined ? { apiKey } : {}) }]
     })) as Partial<Record<AiProviderId, ProviderConfig>>,
   }
 }
@@ -134,10 +149,6 @@ async function readStoredSettings(settingsFile?: string): Promise<StoredAiSettin
   }
 }
 
-export async function resolveAiServiceConfig(config: AiServiceConfig): Promise<AiServiceConfig> {
-  return mergeConfig(config, await readStoredSettings(config.settingsFile))
-}
-
 async function withSettingsFileLock<T>(settingsFile: string, operation: () => Promise<T>): Promise<T> {
   const previous = settingsWriteTails.get(settingsFile) ?? Promise.resolve()
   let release: () => void = () => {}
@@ -151,6 +162,47 @@ async function withSettingsFileLock<T>(settingsFile: string, operation: () => Pr
     release()
     if (settingsWriteTails.get(settingsFile) === tail) settingsWriteTails.delete(settingsFile)
   }
+}
+
+async function writeStoredSettings(target: string, nextStored: StoredAiSettings) {
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(temporary, `${JSON.stringify(nextStored, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await rename(temporary, target)
+  } catch {
+    await unlink(temporary).catch(() => undefined)
+    throw new AiServiceError('AI 设置保存失败，请检查项目目录写入权限。', 'AI_SETTINGS_WRITE_FAILED', 500)
+  }
+}
+
+export async function resolveAiServiceConfig(config: AiServiceConfig): Promise<AiServiceConfig> {
+  let stored = await readStoredSettings(config.settingsFile)
+  if (config.settingsFile && config.protectApiKey && config.isApiKeyProtected) {
+    const needsMigration = AI_PROVIDERS.some((provider) => {
+      const apiKey = stored.providers?.[provider]?.apiKey
+      return Boolean(apiKey && !config.isApiKeyProtected?.(apiKey))
+    })
+    if (needsMigration) {
+      stored = await withSettingsFileLock(config.settingsFile, async () => {
+        const latest = await readStoredSettings(config.settingsFile)
+        const providers = { ...latest.providers }
+        for (const provider of AI_PROVIDERS) {
+          const current = providers[provider]
+          if (!current?.apiKey || config.isApiKeyProtected?.(current.apiKey)) continue
+          try {
+            providers[provider] = { ...current, apiKey: config.protectApiKey?.(current.apiKey) }
+          } catch {
+            throw new AiServiceError('API Key 安全迁移失败，请重启应用后重试。', 'AI_SETTINGS_WRITE_FAILED', 500)
+          }
+        }
+        const migrated = { ...latest, providers }
+        await writeStoredSettings(config.settingsFile as string, migrated)
+        return migrated
+      })
+    }
+  }
+  return mergeConfig(config, stored)
 }
 
 function validateSettingsPayload(value: unknown): AiProviderSettingsPayload {
@@ -192,19 +244,18 @@ export async function saveAiProviderSettings(config: AiServiceConfig, rawPayload
       ...(payload.provider === 'custom' ? { label: payload.label } : {}),
     }
     if (payload.clearApiKey) next.apiKey = ''
-    else if (payload.apiKey) next.apiKey = payload.apiKey
+    else if (payload.apiKey) {
+      try {
+        next.apiKey = config.protectApiKey ? config.protectApiKey(payload.apiKey) : payload.apiKey
+      } catch {
+        throw new AiServiceError('API Key 安全存储不可用，请重启应用后重试。', 'AI_SETTINGS_WRITE_FAILED', 500)
+      }
+    }
 
     const nextStored: StoredAiSettings = {
       providers: { ...stored.providers, [payload.provider]: next },
     }
-    const temporary = `${target}.${randomUUID()}.tmp`
-    try {
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(temporary, `${JSON.stringify(nextStored, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-      await rename(temporary, target)
-    } catch {
-      throw new AiServiceError('AI 设置保存失败，请检查项目目录写入权限。', 'AI_SETTINGS_WRITE_FAILED', 500)
-    }
+    await writeStoredSettings(target, nextStored)
     return mergeConfig(config, nextStored)
   })
 }
@@ -425,6 +476,21 @@ function requestSignal(timeoutMs: number, externalSignal?: AbortSignal): AbortSi
   return externalSignal ? AbortSignal.any([externalSignal, timeoutSignal]) : timeoutSignal
 }
 
+async function fetchFromProvider(
+  providerLabel: string,
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, init)
+  } catch (error) {
+    const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : ''
+    if (name === 'AbortError' || name === 'TimeoutError') throw error
+    throw new AiServiceError(`${providerLabel} 连接失败，请检查接口地址和网络。`, 'AI_UPSTREAM_ERROR', 502)
+  }
+}
+
 export async function fetchProviderModels(
   config: AiServiceConfig,
   providerId: AiProviderId,
@@ -432,8 +498,9 @@ export async function fetchProviderModels(
   signal?: AbortSignal,
 ): Promise<string[]> {
   const provider = resolveProvider(config, providerId)
-  const response = await fetchImpl(`${provider.baseUrl}/models`, {
+  const response = await fetchFromProvider(provider.label, fetchImpl, `${provider.baseUrl}/models`, {
     headers: { Authorization: `Bearer ${provider.apiKey}`, Accept: 'application/json' },
+    redirect: 'error',
     signal: requestSignal(30_000, signal),
   })
   const body = await upstreamJson(response)
@@ -457,7 +524,7 @@ export async function runAiRequest(
 ) {
   const payload = validatePayload(rawPayload)
   const provider = resolveProvider(config, payload.provider)
-  const response = await fetchImpl(`${provider.baseUrl}/chat/completions`, {
+  const response = await fetchFromProvider(provider.label, fetchImpl, `${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${provider.apiKey}`,
@@ -474,6 +541,7 @@ export async function runAiRequest(
       max_tokens: 8000,
       stream: false,
     }),
+    redirect: 'error',
     signal: requestSignal(90_000, signal),
   })
   const body = await upstreamJson(response)
@@ -522,7 +590,7 @@ export async function runAiRequestStream(
 ) {
   const payload = validatePayload(rawPayload)
   const provider = resolveProvider(config, payload.provider)
-  const response = await fetchImpl(`${provider.baseUrl}/chat/completions`, {
+  const response = await fetchFromProvider(provider.label, fetchImpl, `${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${provider.apiKey}`,
@@ -540,6 +608,7 @@ export async function runAiRequestStream(
       max_tokens: 8000,
       stream: true,
     }),
+    redirect: 'error',
     signal: requestSignal(90_000, signal),
   })
 
@@ -626,7 +695,41 @@ function sendJson(response: ServerResponse, status: number, body: unknown) {
   response.statusCode = status
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
   response.setHeader('Cache-Control', 'no-store')
+  response.setHeader('X-Content-Type-Options', 'nosniff')
+  response.setHeader('Referrer-Policy', 'no-referrer')
   response.end(JSON.stringify(body))
+}
+
+function routeFor(pathname: string): 'root' | 'models' | 'settings' | 'stream' | null {
+  const normalized = pathname.replace(/\/+$/, '') || '/'
+  if (normalized === '/' || normalized === '/api/ai') return 'root'
+  if (normalized === '/models' || normalized === '/api/ai/models') return 'models'
+  if (normalized === '/settings' || normalized === '/api/ai/settings') return 'settings'
+  if (normalized === '/stream' || normalized === '/api/ai/stream') return 'stream'
+  return null
+}
+
+function isSameOriginBrowserRequest(request: IncomingMessage): boolean {
+  const fetchSiteHeader = request.headers['sec-fetch-site']
+  const fetchSite = Array.isArray(fetchSiteHeader) ? fetchSiteHeader[0] : fetchSiteHeader
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') return false
+
+  const originHeader = request.headers.origin
+  const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader
+  if (!origin) return true
+  const host = request.headers.host
+  if (!host) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false
+  }
+}
+
+function requireJsonContentType(request: IncomingMessage) {
+  if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+    throw new AiServiceError('AI 请求必须使用 JSON 格式。', 'AI_REQUEST_INVALID', 415)
+  }
 }
 
 function streamError(error: unknown) {
@@ -650,19 +753,29 @@ export function createAiMiddleware(config: AiServiceConfig) {
     })
     try {
       const url = new URL(request.url || '/', 'http://localhost')
-      if (request.method === 'GET' && url.pathname.endsWith('/models')) {
+      const route = routeFor(url.pathname)
+      if (!route) {
+        sendJson(response, 404, { error: { code: 'NOT_FOUND', message: '接口不存在。' } })
+        return
+      }
+      if (!isSameOriginBrowserRequest(request)) {
+        sendJson(response, 403, { error: { code: 'FORBIDDEN', message: '已拒绝跨站请求。' } })
+        return
+      }
+      if (request.method === 'GET' && route === 'models') {
         const providerId = url.searchParams.get('provider')
         if (!isProvider(providerId)) throw new AiServiceError('不支持这个 AI 服务。', 'AI_REQUEST_INVALID', 400)
         const effectiveConfig = await resolveAiServiceConfig(config)
         sendJson(response, 200, { provider: providerId, models: await fetchProviderModels(effectiveConfig, providerId, fetch, controller.signal) })
         return
       }
-      if (request.method === 'PUT' && url.pathname.endsWith('/settings')) {
+      if (request.method === 'PUT' && route === 'settings') {
+        requireJsonContentType(request)
         const effectiveConfig = await saveAiProviderSettings(config, await readJsonBody(request))
         sendJson(response, 200, getStatus(effectiveConfig))
         return
       }
-      if (request.method === 'GET') {
+      if (request.method === 'GET' && route === 'root') {
         sendJson(response, 200, getStatus(await resolveAiServiceConfig(config)))
         return
       }
@@ -670,7 +783,8 @@ export function createAiMiddleware(config: AiServiceConfig) {
         sendJson(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '不支持这个请求方式。' } })
         return
       }
-      if (url.pathname.endsWith('/stream')) {
+      requireJsonContentType(request)
+      if (route === 'stream') {
         response.statusCode = 200
         response.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
         response.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -690,6 +804,10 @@ export function createAiMiddleware(config: AiServiceConfig) {
         } catch (error) {
           if (!response.destroyed) response.end(`${JSON.stringify({ type: 'error', error: streamError(error) })}\n`)
         }
+        return
+      }
+      if (route !== 'root') {
+        sendJson(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '不支持这个请求方式。' } })
         return
       }
       sendJson(response, 200, await runAiRequest(await resolveAiServiceConfig(config), await readJsonBody(request), fetch, controller.signal))

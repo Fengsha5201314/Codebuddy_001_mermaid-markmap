@@ -1,9 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AiServiceError,
+  createAiMiddleware,
   fetchProviderModels,
   resolveAiServiceConfig,
   runAiRequest,
@@ -32,6 +35,22 @@ function chatResponse(result: unknown) {
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
 
+async function withAiServer<T>(operation: (origin: string) => Promise<T>): Promise<T> {
+  const middleware = createAiMiddleware({})
+  const server = createServer((request, response) => { void middleware(request, response) })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address() as AddressInfo
+  try {
+    return await operation(`http://127.0.0.1:${address.port}`)
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
+
 describe('AI service', () => {
   it('requires the selected provider configuration', async () => {
     await expect(runAiRequest({}, payload)).rejects.toMatchObject({
@@ -46,6 +65,7 @@ describe('AI service', () => {
     }), { status: 200 }))
     await expect(fetchProviderModels(config, 'cpa', fetchMock as typeof fetch)).resolves.toEqual(['model-a', 'model-b'])
     expect(fetchMock.mock.calls[0][0]).toBe('https://cpa.example/v1/models')
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe('error')
   })
 
   it('supports an OpenAI-compatible custom provider', async () => {
@@ -78,6 +98,31 @@ describe('AI service', () => {
         baseUrl: 'https://internal.example/v2',
         apiKey: 'secret-key',
       })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('migrates legacy plaintext keys through the configured desktop key protector', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'chart-ai-migration-'))
+    const settingsFile = join(directory, 'providers.json')
+    const settingsConfig = {
+      settingsFile,
+      isApiKeyProtected: (value: string) => value.startsWith('protected:'),
+      protectApiKey: (value: string) => `protected:${Buffer.from(value).toString('base64')}`,
+      unprotectApiKey: (value: string) => value.startsWith('protected:')
+        ? Buffer.from(value.slice('protected:'.length), 'base64').toString('utf8')
+        : value,
+    }
+    try {
+      await writeFile(settingsFile, JSON.stringify({
+        providers: { cpa: { baseUrl: 'https://cpa.example/v1', apiKey: 'legacy-fake-key' } },
+      }))
+      const resolved = await resolveAiServiceConfig(settingsConfig)
+      expect(resolved.providers?.cpa?.apiKey).toBe('legacy-fake-key')
+      const stored = await readFile(settingsFile, 'utf8')
+      expect(stored).not.toContain('legacy-fake-key')
+      expect(stored).toContain('protected:')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -126,6 +171,47 @@ describe('AI service', () => {
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
+  })
+
+  it('only permits unencrypted HTTP for loopback AI services', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'chart-ai-http-'))
+    const settingsConfig = { settingsFile: join(directory, 'providers.json') }
+    try {
+      await expect(saveAiProviderSettings(settingsConfig, {
+        provider: 'custom',
+        baseUrl: 'http://api.example.com/v1',
+        apiKey: 'fake-key',
+      })).rejects.toMatchObject({ code: 'AI_CONFIG_INVALID', status: 400 })
+      await expect(saveAiProviderSettings(settingsConfig, {
+        provider: 'custom',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        apiKey: 'fake-key',
+      })).resolves.toBeTruthy()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses exact API routes and rejects cross-site or non-JSON mutations', async () => {
+    await withAiServer(async (origin) => {
+      const unknown = await fetch(`${origin}/api/ai/not-settings`, {
+        headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
+      })
+      expect(unknown.status).toBe(404)
+
+      const crossSite = await fetch(`${origin}/api/ai`, {
+        headers: { Origin: 'https://attacker.example', 'Sec-Fetch-Site': 'cross-site' },
+      })
+      expect(crossSite.status).toBe(403)
+
+      const invalidType = await fetch(`${origin}/api/ai/settings`, {
+        method: 'PUT',
+        headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'text/plain' },
+        body: '{}',
+      })
+      expect(invalidType.status).toBe(415)
+      await expect(invalidType.json()).resolves.toMatchObject({ error: { code: 'AI_REQUEST_INVALID' } })
+    })
   })
 
   it('normalizes a compatible chat completion response', async () => {
@@ -252,6 +338,17 @@ describe('AI service', () => {
     const pending = runAiRequest(config, payload, fetchMock as typeof fetch, controller.signal)
     controller.abort()
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('returns a stable localized error when the provider cannot be reached', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError('fetch failed: secret transport details')
+    })
+    await expect(fetchProviderModels(config, 'cpa', fetchMock as typeof fetch)).rejects.toMatchObject({
+      code: 'AI_UPSTREAM_ERROR',
+      status: 502,
+      message: 'CPA AI 连接失败，请检查接口地址和网络。',
+    })
   })
 
   it('keeps source unchanged when explaining', async () => {

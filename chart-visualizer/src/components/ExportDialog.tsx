@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, Download, FileCode2, FileImage, FileText, LoaderCircle } from 'lucide-react'
-import { copyMarkdown, copySvg, exportDiagram } from '@/lib/export'
+import { copyMarkdown, copySvg, exportDiagram, normalizeExportBackground } from '@/lib/export'
 import type { ExportOptions, RenderResult } from '@/types'
 import { Modal } from './Modal'
 
@@ -36,6 +36,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
     }
   }, [open])
   const requiresRender = !['mmd', 'markdown'].includes(format)
+  const effectiveBackground = normalizeExportBackground(format, background)
   const estimated = useMemo(() => result ? `${Math.round((result.width + padding * 2) * scale)} × ${Math.round((result.height + padding * 2) * scale)} px` : '等待有效预览', [padding, result, scale])
 
   const handleExport = async () => {
@@ -48,7 +49,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
         fileName: title,
         scale,
         padding,
-        background: background === 'transparent' ? 'transparent' : background,
+        background: effectiveBackground,
       })
       onClose()
     } catch (caught) {
@@ -91,8 +92,9 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
               </div>
               <div className="background-options">
                 <span>背景</span>
-                {['white', '#f7f8fa', 'transparent'].map((color) => <button key={color} className={background === color ? 'active' : ''} onClick={() => setBackground(color)}><i style={{ background: color === 'transparent' ? 'repeating-conic-gradient(#ddd 0 25%, white 0 50%) 0 / 10px 10px' : color }} />{color === 'white' ? '白色' : color === 'transparent' ? '透明' : '浅灰'}</button>)}
+                {['white', '#f7f8fa', 'transparent'].map((color) => <button key={color} className={background === color ? 'active' : ''} onClick={() => setBackground(color)} disabled={format === 'jpeg' && color === 'transparent'} title={format === 'jpeg' && color === 'transparent' ? 'JPG 不支持透明背景' : undefined}><i style={{ background: color === 'transparent' ? 'repeating-conic-gradient(#ddd 0 25%, white 0 50%) 0 / 10px 10px' : color }} />{color === 'white' ? '白色' : color === 'transparent' ? '透明' : '浅灰'}</button>)}
               </div>
+              {format === 'jpeg' && background === 'transparent' && <p className="export-inline-note">JPG 不支持透明通道，本次将自动使用白色背景。</p>}
             </>
           )}
         </div>

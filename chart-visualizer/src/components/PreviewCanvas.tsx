@@ -172,7 +172,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.key.toLowerCase() !== 'f') return
       const target = event.target as HTMLElement | null
-      if (target?.closest('input, textarea, [contenteditable="true"], .monaco-editor')) return
+      if (target && target !== document.body && !viewportRef.current?.contains(target)) return
       event.preventDefault()
       fit()
     }
@@ -208,9 +208,11 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
       onError(null)
       setInlineEditor(null)
       setView({ x: 0, y: 0, zoom: 1 })
-      onResult(null)
     }
     const request = ++requestRef.current
+    // A previous good diagram may remain visible while the new source is
+    // checked, but it must not remain eligible for export.
+    onResult(null)
     const timeout = window.setTimeout(async () => {
       const started = performance.now()
       setRendering(true)
@@ -233,6 +235,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
         setResult(null)
         setError(normalized)
         onError(normalized)
+        onResult(null)
       } finally {
         if (request === requestRef.current) setRendering(false)
       }
@@ -241,7 +244,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
   }, [active?.code, active?.themeId, active?.id, fit, onError, onResult, preferences.renderDelay])
 
   if (!active) return null
-  const displayed = result ?? lastGoodResult
+  const displayed = activeDocumentRef.current === active.id ? result ?? lastGoodResult : null
   const theme = getDiagramTheme(active.themeId)
 
   const openInlineEditor = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -303,7 +306,11 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
             <Grid3X3 size={15} />
           </button>
           <button onClick={() => fit()} title="适应画布 (F)" aria-label="适应画布"><Expand size={15} /></button>
-          <button onClick={() => viewportRef.current?.requestFullscreen?.()} title="预览全屏" aria-label="预览全屏"><Maximize2 size={15} /></button>
+          <button
+            onClick={() => void viewportRef.current?.requestFullscreen?.().catch(() => showCanvasFeedback('当前环境未允许进入全屏模式'))}
+            title="预览全屏"
+            aria-label="预览全屏"
+          ><Maximize2 size={15} /></button>
         </div>
       </div>
 
@@ -341,6 +348,16 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
           if (event.key === '0') {
             event.preventDefault()
             resetView()
+          }
+          if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+            event.preventDefault()
+            fitModeRef.current = false
+            const step = event.shiftKey ? 100 : 36
+            setView((current) => ({
+              ...current,
+              x: current.x + (event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0),
+              y: current.y + (event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0),
+            }))
           }
           if (event.key === 'Escape') setInlineEditor(null)
         }}

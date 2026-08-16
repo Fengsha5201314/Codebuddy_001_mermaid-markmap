@@ -1,4 +1,5 @@
 import type { DiagramDocument } from '@/types'
+import { validateDrawioXml } from '@/lib/drawio-xml'
 import { createWorkspaceBackup, parseWorkspaceBackup } from '@/lib/workspace-data'
 
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024
@@ -19,6 +20,7 @@ export function downloadWorkspace(documents: DiagramDocument[]): void {
 export async function parseImportFile(file: File): Promise<
   | { type: 'workspace'; documents: DiagramDocument[] }
   | { type: 'diagram'; title: string; code: string }
+  | { type: 'visual'; title: string; drawioXml: string }
 > {
   if (file.size > MAX_IMPORT_BYTES) {
     throw new Error('文件超过 10 MB，请拆分后再导入。')
@@ -28,6 +30,16 @@ export async function parseImportFile(file: File): Promise<
   if (file.name.toLowerCase().endsWith('.json')) {
     const parsed = parseWorkspaceBackup(text)
     return { type: 'workspace', documents: parsed.documents }
+  }
+  if (file.name.toLowerCase().endsWith('.drawio')) {
+    const drawioXml = text.trim()
+    const validationError = validateDrawioXml(drawioXml)
+    if (validationError) throw new Error(`无法导入 draw.io 文件：${validationError}`)
+    return {
+      type: 'visual',
+      title: file.name.replace(/\.drawio$/i, '').trim() || '导入的可视化画布',
+      drawioXml,
+    }
   }
 
   const codeBlock = text.match(/```mermaid\s*([\s\S]*?)```/i)

@@ -200,6 +200,9 @@ function App() {
           importWorkspace(parsed.documents)
           showNotice(`已恢复 ${parsed.documents.length} 个图表`)
         }
+      } else if (parsed.type === 'visual') {
+        createVisualDocument(parsed.title, parsed.drawioXml)
+        showNotice(`已导入可视化画布“${parsed.title}”`)
       } else {
         importDiagram(parsed.title, parsed.code)
         showNotice(`已导入“${parsed.title}”`)
@@ -323,7 +326,7 @@ function App() {
         ref={fileInputRef}
         type="file"
         hidden
-        accept=".mmd,.mermaid,.md,.txt,.json,text/plain,application/json"
+        accept=".mmd,.mermaid,.md,.txt,.json,.drawio,text/plain,application/json,application/xml,text/xml"
         onChange={(event) => handleFileImport(event.target.files?.[0])}
       />
 

@@ -1,11 +1,13 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import path from 'node:path'
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { createAiMiddleware } from '../server/ai-service.ts'
 import packageInfo from '../package.json' with { type: 'json' }
+import { isSameOriginNavigation, isTrustedLocalRequest, resolveDevelopmentRendererUrl } from './security.ts'
 
 const APP_NAME = '风沙图表工作台'
 const APP_ID = 'online.fengsha.diagram'
@@ -13,8 +15,9 @@ const APP_HOST = '127.0.0.1'
 const requestedPort = Number(process.env.FENGSHA_DESKTOP_PORT)
 const APP_PORT = Number.isInteger(requestedPort) && requestedPort >= 1024 && requestedPort <= 65_535
   ? requestedPort
-  : 43817
+  : 0
 const RELEASES_URL = 'https://github.com/Fengsha5201314/Codebuddy_001_mermaid-markmap/releases'
+const SAFE_STORAGE_PREFIX = 'electron-safe-storage:v1:'
 
 type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'up-to-date' | 'error' | 'development'
 
@@ -27,6 +30,7 @@ interface UpdateState {
 }
 
 let mainWindow: BrowserWindow | null = null
+let mainWindowCreation: Promise<BrowserWindow> | null = null
 let localServer: Server | null = null
 let localOrigin = ''
 const currentVersion = () => app.isPackaged ? app.getVersion() : packageInfo.version
@@ -93,10 +97,11 @@ function registerUpdater() {
     })
   })
   autoUpdater.on('error', (error) => {
+    void error
     broadcastUpdateState({
       status: 'error',
       progress: undefined,
-      message: `检查更新失败：${error.message || '无法连接更新服务。'}`,
+      message: '检查更新失败，请确认网络连接后重试。',
     })
   })
 }
@@ -120,9 +125,8 @@ function registerIpc() {
     if (['checking', 'available', 'downloading'].includes(updateState.status)) return updateState
     try {
       await autoUpdater.checkForUpdates()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '无法连接更新服务。'
-      broadcastUpdateState({ status: 'error', progress: undefined, message: `检查更新失败：${message}` })
+    } catch {
+      broadcastUpdateState({ status: 'error', progress: undefined, message: '检查更新失败，请确认网络连接后重试。' })
     }
     return updateState
   })
@@ -139,13 +143,13 @@ function sendServerError(response: ServerResponse, statusCode: number, message: 
   response.end(message)
 }
 
-async function serveStaticFile(request: IncomingMessage, response: ServerResponse, staticRoot: string) {
+async function serveStaticFile(request: IncomingMessage, response: ServerResponse, staticRoot: string, origin: string) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     sendServerError(response, 405, 'Method Not Allowed')
     return
   }
 
-  const url = new URL(request.url || '/', `http://${APP_HOST}:${APP_PORT}`)
+  const url = new URL(request.url || '/', origin)
   let relativePath = ''
   try {
     relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html'
@@ -180,9 +184,12 @@ async function serveStaticFile(request: IncomingMessage, response: ServerRespons
     response.setHeader('Cache-Control', relativePath === 'index.html' ? 'no-cache' : 'public, max-age=31536000, immutable')
     response.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https:; frame-src 'self' https://embed.diagrams.net; worker-src 'self' blob:;",
+      "default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://embed.diagrams.net; frame-ancestors 'self'; worker-src 'self' blob:;",
     )
     response.setHeader('X-Content-Type-Options', 'nosniff')
+    response.setHeader('X-Frame-Options', 'SAMEORIGIN')
+    response.setHeader('Referrer-Policy', 'no-referrer')
+    response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()')
     if (request.method === 'HEAD') {
       response.end()
       return
@@ -199,6 +206,16 @@ async function startLocalServer() {
   const staticRoot = path.join(appRoot, 'dist')
   const aiMiddleware = createAiMiddleware({
     settingsFile: path.join(app.getPath('userData'), 'ai-providers.json'),
+    isApiKeyProtected: (storedValue) => storedValue.startsWith(SAFE_STORAGE_PREFIX),
+    protectApiKey: (apiKey) => {
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('Electron safeStorage is unavailable.')
+      return `${SAFE_STORAGE_PREFIX}${safeStorage.encryptString(apiKey).toString('base64')}`
+    },
+    unprotectApiKey: (storedValue) => {
+      if (!storedValue.startsWith(SAFE_STORAGE_PREFIX)) return storedValue
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('Electron safeStorage is unavailable.')
+      return safeStorage.decryptString(Buffer.from(storedValue.slice(SAFE_STORAGE_PREFIX.length), 'base64'))
+    },
     providers: {
       cpa: { baseUrl: process.env.CPA_BASE_URL || 'https://cpa.fengsha.online/v1', apiKey: process.env.CPA_API_KEY },
       deepseek: { baseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com', apiKey: process.env.DEEPSEEK_API_KEY },
@@ -207,9 +224,13 @@ async function startLocalServer() {
   })
 
   localServer = createServer((request, response) => {
+    if (!localOrigin || !isTrustedLocalRequest(request.headers, localOrigin, request.method)) {
+      sendServerError(response, 403, 'Forbidden')
+      return
+    }
     let pathname = ''
     try {
-      pathname = new URL(request.url || '/', `http://${APP_HOST}:${APP_PORT}`).pathname
+      pathname = new URL(request.url || '/', localOrigin).pathname
     } catch {
       sendServerError(response, 400, 'Bad Request')
       return
@@ -218,24 +239,41 @@ async function startLocalServer() {
       void aiMiddleware(request, response)
       return
     }
-    void serveStaticFile(request, response, staticRoot)
+    void serveStaticFile(request, response, staticRoot, localOrigin)
   })
+
+  localServer.headersTimeout = 15_000
+  localServer.requestTimeout = 30_000
+  localServer.keepAliveTimeout = 5_000
+  localServer.maxHeadersCount = 100
 
   await new Promise<void>((resolve, reject) => {
     localServer?.once('error', reject)
-    localServer?.listen(APP_PORT, APP_HOST, () => resolve())
+    localServer?.listen(APP_PORT, APP_HOST, () => {
+      const address = localServer?.address() as AddressInfo | null
+      if (!address) {
+        reject(new Error('Local server did not expose a listening address.'))
+        return
+      }
+      localOrigin = `http://${APP_HOST}:${address.port}`
+      resolve()
+    })
   })
-  localOrigin = `http://${APP_HOST}:${APP_PORT}`
   return localOrigin
 }
 
 async function createMainWindow() {
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL || await startLocalServer()
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+  if (mainWindowCreation) return mainWindowCreation
+
+  mainWindowCreation = (async () => {
+  const developmentUrl = app.isPackaged ? null : resolveDevelopmentRendererUrl(process.env.ELECTRON_RENDERER_URL)
+  const rendererUrl = developmentUrl || await startLocalServer()
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'icon.png')
     : path.join(process.cwd(), 'build', 'icon.png')
 
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     title: APP_NAME,
     width: 1480,
     height: 920,
@@ -253,16 +291,27 @@ async function createMainWindow() {
     },
   })
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url)
+  mainWindow = window
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(rendererUrl)) event.preventDefault()
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isSameOriginNavigation(url, rendererUrl)) event.preventDefault()
   })
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
-  mainWindow.on('closed', () => { mainWindow = null })
-  await mainWindow.loadURL(rendererUrl)
+  window.once('ready-to-show', () => window.show())
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
+  })
+  await window.loadURL(rendererUrl)
+  return window
+  })()
+
+  try {
+    return await mainWindowCreation
+  } finally {
+    mainWindowCreation = null
+  }
 }
 
 const ownsLock = app.requestSingleInstanceLock()
@@ -271,8 +320,12 @@ if (!ownsLock) {
 } else {
   app.setAppUserModelId(APP_ID)
   app.on('second-instance', () => {
-    if (!mainWindow) return
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      void createMainWindow()
+      return
+    }
     if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
     mainWindow.focus()
   })
   app.whenReady().then(async () => {
@@ -292,6 +345,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 app.on('before-quit', () => {
+  localServer?.closeIdleConnections()
+  localServer?.closeAllConnections()
   localServer?.close()
   localServer = null
   localOrigin = ''
