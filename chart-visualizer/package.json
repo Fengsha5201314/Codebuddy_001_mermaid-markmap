@@ -1,7 +1,7 @@
 {
   "name": "fengsha-diagram-workbench",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "风沙的本地优先智能流程图与可视化画布工作台",
   "author": "风沙",
   "main": "dist-electron/main.cjs",
@@ -49,7 +49,6 @@
     "productName": "风沙图表工作台",
     "artifactName": "Fengsha-Diagram-Setup-${version}-${arch}.${ext}",
     "asar": true,
-    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release",
       "buildResources": "build"
