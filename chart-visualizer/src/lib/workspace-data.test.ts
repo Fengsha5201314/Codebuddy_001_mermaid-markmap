@@ -4,6 +4,8 @@ import type { DiagramDocument } from '@/types'
 
 const document: DiagramDocument = {
   id: 'diagram-1',
+  projectId: 'project-1',
+  order: 0,
   title: '审批流程',
   description: '测试图表',
   engine: 'mermaid',
@@ -77,7 +79,7 @@ describe('workspace data', () => {
       }],
     }
     const restored = parseWorkspaceBackup(JSON.stringify(createWorkspaceBackup([visualDocument])))
-    expect(restored.version).toBe(2)
+    expect(restored.version).toBe(3)
     expect(restored.documents[0]).toEqual(visualDocument)
   })
 
@@ -89,7 +91,7 @@ describe('workspace data', () => {
       exportedAt: document.createdAt,
       documents: [legacyDocument],
     }))
-    expect(restored.version).toBe(2)
+    expect(restored.version).toBe(3)
     expect(restored.documents[0].engine).toBe('mermaid')
   })
 

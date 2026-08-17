@@ -317,7 +317,44 @@ describe('AI service', () => {
       currentDiagramAvailable: true,
       detectedDiagramKind: 'flowchart',
       currentMermaid: injectedPayload.code,
+      phase: 'generate',
+      conversation: [],
     })
+  })
+
+  it('sends image attachments as OpenAI-compatible multimodal content', async () => {
+    const fetchMock = vi.fn(async () => chatResponse({
+      action: 'explain',
+      summary: '已识别图片中的流程信息。',
+      code: payload.code,
+      changes: [],
+    }))
+    await runAiRequest(config, {
+      ...payload,
+      action: 'auto',
+      attachments: [{
+        kind: 'image',
+        name: '白板.png',
+        mimeType: 'image/png',
+        content: 'data:image/png;base64,aGVsbG8=',
+      }],
+    }, fetchMock as typeof fetch)
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+    const content = request.messages.find((message) => message.role === 'user')?.content
+    expect(content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'text' }),
+      expect.objectContaining({ type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=', detail: 'auto' } }),
+    ]))
+  })
+
+  it('rejects images for DeepSeek with an actionable capability message', async () => {
+    await expect(runAiRequest({}, {
+      ...payload,
+      provider: 'deepseek',
+      attachments: [{ kind: 'image', name: '流程.png', mimeType: 'image/png', content: 'data:image/png;base64,aA==' }],
+    })).rejects.toMatchObject({ code: 'AI_MODEL_NO_VISION', status: 400 })
   })
 
   it('uses one context-aware request and returns the operation selected by the model', async () => {

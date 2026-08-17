@@ -76,6 +76,7 @@ function useViewportWidth() {
 
 function App() {
   const documents = useWorkspaceStore((state) => state.documents)
+  const projects = useWorkspaceStore((state) => state.projects)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const createDocument = useWorkspaceStore((state) => state.createDocument)
   const createVisualDocument = useWorkspaceStore((state) => state.createVisualDocument)
@@ -223,7 +224,7 @@ function App() {
       const parsed = await parseImportFile(file)
       if (parsed.type === 'workspace') {
         if (window.confirm(`备份中包含 ${parsed.documents.length} 个图表。导入后将替换当前本地工作区，是否继续？`)) {
-          importWorkspace(parsed.documents)
+          importWorkspace(parsed.documents, parsed.projects)
           showNotice(`已恢复 ${parsed.documents.length} 个图表`)
         }
       } else if (parsed.type === 'visual') {
@@ -256,7 +257,7 @@ function App() {
           onViewChange={(workspaceView) => updatePreferences({ workspaceView })}
           onExport={() => setExportOpen(true)}
           onImport={() => fileInputRef.current?.click()}
-          onBackup={() => { downloadWorkspace(documents); showNotice('工作区备份已下载') }}
+          onBackup={() => { downloadWorkspace(documents, projects); showNotice('工作区备份已下载') }}
           onShortcuts={() => setShortcutsOpen(true)}
           onResearch={() => setRoadmapOpen(true)}
           onSettings={() => setSettingsOpen(true)}
@@ -406,7 +407,7 @@ function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onImport={() => fileInputRef.current?.click()}
-        onBackup={() => { downloadWorkspace(documents); showNotice('工作区备份已下载') }}
+        onBackup={() => { downloadWorkspace(documents, projects); showNotice('工作区备份已下载') }}
       />
       <Modal open={roadmapOpen} onClose={() => setRoadmapOpen(false)} title="从编辑器到商业产品" description="基于 12 类主流工具官方资料形成的产品路线。" size="large">
         <div className="roadmap-summary">

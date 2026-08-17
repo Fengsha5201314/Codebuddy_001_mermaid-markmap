@@ -1,11 +1,11 @@
-import type { DiagramDocument } from '@/types'
+import type { DiagramDocument, DiagramProject } from '@/types'
 import { validateDrawioXml } from '@/lib/drawio-xml'
 import { createWorkspaceBackup, parseWorkspaceBackup } from '@/lib/workspace-data'
 
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024
 
-export function downloadWorkspace(documents: DiagramDocument[]): void {
-  const payload = createWorkspaceBackup(documents)
+export function downloadWorkspace(documents: DiagramDocument[], projects?: DiagramProject[]): void {
+  const payload = createWorkspaceBackup(documents, projects)
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -18,7 +18,7 @@ export function downloadWorkspace(documents: DiagramDocument[]): void {
 }
 
 export async function parseImportFile(file: File): Promise<
-  | { type: 'workspace'; documents: DiagramDocument[] }
+  | { type: 'workspace'; documents: DiagramDocument[]; projects: DiagramProject[] }
   | { type: 'diagram'; title: string; code: string }
   | { type: 'visual'; title: string; drawioXml: string }
 > {
@@ -29,7 +29,7 @@ export async function parseImportFile(file: File): Promise<
   if (!text.trim()) throw new Error('文件内容为空。')
   if (file.name.toLowerCase().endsWith('.json')) {
     const parsed = parseWorkspaceBackup(text)
-    return { type: 'workspace', documents: parsed.documents }
+    return { type: 'workspace', documents: parsed.documents, projects: parsed.projects }
   }
   if (file.name.toLowerCase().endsWith('.drawio')) {
     const drawioXml = text.trim()

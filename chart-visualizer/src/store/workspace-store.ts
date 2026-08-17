@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { defaultTemplate, getTemplate } from '@/data/templates'
 import { detectDiagramKind } from '@/lib/diagram-engine'
-import { EMPTY_DRAWIO_XML, normalizeWorkspaceDocuments } from '@/lib/workspace-data'
-import type { DiagramDocument, DiagramThemeId, DiagramVersion, WorkspacePreferences, WorkspaceView } from '@/types'
+import { EMPTY_DRAWIO_XML, normalizeWorkspaceDocuments, normalizeWorkspaceProjects } from '@/lib/workspace-data'
+import type { DiagramDocument, DiagramProject, DiagramThemeId, DiagramVersion, WorkspacePreferences, WorkspaceView } from '@/types'
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -13,11 +13,24 @@ function now(): string {
   return new Date().toISOString()
 }
 
-function documentFromTemplate(templateId = defaultTemplate.id): DiagramDocument {
+function projectFromDocument(document: DiagramDocument): DiagramProject {
+  return {
+    id: document.projectId,
+    title: document.title,
+    description: document.description,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  }
+}
+
+function documentFromTemplate(templateId = defaultTemplate.id, projectId = id('project'), parentDocumentId?: string): DiagramDocument {
   const template = getTemplate(templateId) ?? defaultTemplate
   const timestamp = now()
   return {
     id: id('diagram'),
+    projectId,
+    ...(parentDocumentId ? { parentDocumentId } : {}),
+    order: Date.now(),
     title: template.title,
     description: template.description,
     engine: 'mermaid',
@@ -33,16 +46,21 @@ function documentFromTemplate(templateId = defaultTemplate.id): DiagramDocument 
 }
 
 const starter = documentFromTemplate()
+const starterProject = projectFromDocument(starter)
 
 interface WorkspaceState {
+  projects: DiagramProject[]
   documents: DiagramDocument[]
+  activeProjectId: string
   activeDocumentId: string
   preferences: WorkspacePreferences
-  createDocument: (templateId?: string) => string
+  createDocument: (templateId?: string, projectId?: string, parentDocumentId?: string) => string
+  renameProject: (projectId: string, title: string) => void
+  deleteProject: (projectId: string) => void
   createVisualDocument: (title?: string, drawioXml?: string, sourceMermaid?: string) => string
   convertActiveToVisual: (drawioXml?: string, refreshFromSource?: boolean) => string | undefined
   importDiagram: (title: string, code: string) => string
-  importWorkspace: (documents: DiagramDocument[]) => void
+  importWorkspace: (documents: DiagramDocument[], projects?: DiagramProject[]) => void
   setActiveDocument: (id: string) => void
   updateActiveDocument: (patch: Partial<Omit<DiagramDocument, 'id' | 'createdAt'>>) => void
   updateCode: (code: string) => void
@@ -59,7 +77,9 @@ interface WorkspaceState {
 export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
     (set, get) => ({
+      projects: [starterProject],
       documents: [starter],
+      activeProjectId: starter.projectId,
       activeDocumentId: starter.id,
       preferences: {
         editorRatio: 38,
@@ -74,17 +94,48 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         aiSelectedModel: '',
       },
 
-      createDocument: (templateId) => {
-        const document = documentFromTemplate(templateId)
-        set((state) => ({ documents: [document, ...state.documents], activeDocumentId: document.id }))
+      createDocument: (templateId, targetProjectId, parentDocumentId) => {
+        const document = documentFromTemplate(templateId, targetProjectId ?? id('project'), parentDocumentId)
+        set((state) => ({
+          projects: targetProjectId
+            ? state.projects.map((project) => project.id === targetProjectId ? { ...project, updatedAt: document.updatedAt } : project)
+            : [projectFromDocument(document), ...state.projects],
+          documents: [document, ...state.documents],
+          activeProjectId: document.projectId,
+          activeDocumentId: document.id,
+        }))
         return document.id
+      },
+
+      renameProject: (projectId, title) => {
+        const nextTitle = title.trim()
+        if (!nextTitle) return
+        set((state) => ({ projects: state.projects.map((project) => project.id === projectId
+          ? { ...project, title: nextTitle, updatedAt: now() }
+          : project) }))
+      },
+
+      deleteProject: (projectId) => {
+        const state = get()
+        if (state.projects.length <= 1) return
+        const projects = state.projects.filter((project) => project.id !== projectId)
+        const documents = state.documents.filter((document) => document.projectId !== projectId)
+        if (!documents.length) return
+        const activeRemoved = state.activeProjectId === projectId
+        const nextDocument = activeRemoved
+          ? documents.find((document) => document.projectId === projects[0].id) ?? documents[0]
+          : documents.find((document) => document.id === state.activeDocumentId) ?? documents[0]
+        set({ projects, documents, activeProjectId: nextDocument.projectId, activeDocumentId: nextDocument.id })
       },
 
       createVisualDocument: (title, drawioXml = EMPTY_DRAWIO_XML, sourceMermaid) => {
         const timestamp = now()
         const mermaidSource = sourceMermaid ?? ''
+        const projectId = id('project')
         const document: DiagramDocument = {
           id: id('diagram'),
+          projectId,
+          order: Date.now(),
           title: title?.trim() || '未命名画布',
           description: '可视化画布图',
           engine: 'drawio',
@@ -99,7 +150,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           updatedAt: timestamp,
           versions: [],
         }
-        set((state) => ({ documents: [document, ...state.documents], activeDocumentId: document.id }))
+        set((state) => ({
+          projects: [projectFromDocument(document), ...state.projects],
+          documents: [document, ...state.documents],
+          activeProjectId: document.projectId,
+          activeDocumentId: document.id,
+        }))
         return document.id
       },
 
@@ -145,7 +201,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           createdAt: timestamp,
           updatedAt: timestamp,
         }
-        set((state) => ({ documents: [document, ...state.documents], activeDocumentId: document.id }))
+        set((state) => ({ documents: [document, ...state.documents], activeProjectId: document.projectId, activeDocumentId: document.id }))
         return document.id
       },
 
@@ -153,6 +209,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const timestamp = now()
         const document: DiagramDocument = {
           id: id('diagram'),
+          projectId: id('project'),
+          order: Date.now(),
           title: title || '导入的图表',
           description: '从本地文件导入',
           engine: 'mermaid',
@@ -165,21 +223,31 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           updatedAt: timestamp,
           versions: [],
         }
-        set((state) => ({ documents: [document, ...state.documents], activeDocumentId: document.id }))
+        set((state) => ({
+          projects: [projectFromDocument(document), ...state.projects],
+          documents: [document, ...state.documents],
+          activeProjectId: document.projectId,
+          activeDocumentId: document.id,
+        }))
         return document.id
       },
 
-      importWorkspace: (documents) => {
+      importWorkspace: (documents, projectsInput) => {
         const valid = normalizeWorkspaceDocuments(documents)
         if (!valid.length) return
-        set({ documents: valid, activeDocumentId: valid[0].id })
+        const projects = normalizeWorkspaceProjects(projectsInput, valid)
+        set({ projects, documents: valid, activeProjectId: valid[0].projectId, activeDocumentId: valid[0].id })
       },
 
-      setActiveDocument: (documentId) => set({ activeDocumentId: documentId }),
+      setActiveDocument: (documentId) => {
+        const document = get().documents.find((item) => item.id === documentId)
+        if (document) set({ activeProjectId: document.projectId, activeDocumentId: documentId })
+      },
 
       updateActiveDocument: (patch) => {
         const activeId = get().activeDocumentId
         const active = get().documents.find((document) => document.id === activeId)
+        const timestamp = now()
         const linkedIds = new Set<string>([activeId])
         if (patch.title !== undefined && active) {
           if (active.engine === 'drawio' && active.sourceDocumentId) linkedIds.add(active.sourceDocumentId)
@@ -190,10 +258,21 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           }
         }
         set((state) => ({
+          projects: active
+            ? state.projects.map((project) => project.id === active.projectId
+              ? {
+                  ...project,
+                  ...(patch.title !== undefined && state.documents.filter((item) => item.projectId === active.projectId && !item.sourceDocumentId).length === 1
+                    ? { title: patch.title || project.title }
+                    : {}),
+                  updatedAt: timestamp,
+                }
+              : project)
+            : state.projects,
           documents: state.documents.map((document) => {
-            if (document.id === activeId) return { ...document, ...patch, updatedAt: now() }
+            if (document.id === activeId) return { ...document, ...patch, updatedAt: timestamp }
             if (patch.title !== undefined && linkedIds.has(document.id)) {
-              return { ...document, title: patch.title, updatedAt: now() }
+              return { ...document, title: patch.title, updatedAt: timestamp }
             }
             return document
           }),
@@ -212,6 +291,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const active = get().documents.find((document) => document.id === activeId && document.engine === 'drawio')
         const timestamp = now()
         set((state) => ({
+          projects: active
+            ? state.projects.map((project) => project.id === active.projectId ? { ...project, updatedAt: timestamp } : project)
+            : state.projects,
           documents: state.documents.map((document) => {
             if (sourceMermaid !== undefined && active?.sourceDocumentId === document.id && document.engine === 'mermaid') {
               return { ...document, code: sourceMermaid, kind: detectDiagramKind(sourceMermaid), updatedAt: timestamp }
@@ -255,7 +337,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           createdAt: timestamp,
           updatedAt: timestamp,
         }
-        set((state) => ({ documents: [duplicate, ...state.documents], activeDocumentId: duplicate.id }))
+        set((state) => ({ documents: [duplicate, ...state.documents], activeProjectId: duplicate.projectId, activeDocumentId: duplicate.id }))
         return duplicate.id
       },
 
@@ -269,9 +351,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         ])
         const remaining = state.documents.filter((document) => !relatedIds.has(document.id))
         if (!remaining.length) return
+        const projects = state.projects.filter((project) => remaining.some((document) => document.projectId === project.id))
+        const nextDocument = relatedIds.has(state.activeDocumentId) ? remaining[0] : remaining.find((item) => item.id === state.activeDocumentId) ?? remaining[0]
         set({
+          projects,
           documents: remaining,
-          activeDocumentId: relatedIds.has(state.activeDocumentId) ? remaining[0].id : state.activeDocumentId,
+          activeProjectId: nextDocument.projectId,
+          activeDocumentId: nextDocument.id,
         })
       },
 
@@ -329,20 +415,25 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }),
     {
       name: 'mermaid-workbench-v2',
-      version: 2,
+      version: 3,
       partialize: (state) => ({
+        projects: state.projects,
         documents: state.documents,
+        activeProjectId: state.activeProjectId,
         activeDocumentId: state.activeDocumentId,
         preferences: state.preferences,
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as {
           documents?: unknown
+          projects?: unknown
+          activeProjectId?: unknown
           activeDocumentId?: unknown
           preferences?: Partial<WorkspacePreferences>
         }
         const normalized = normalizeWorkspaceDocuments(persisted.documents)
         const documents = normalized.length ? normalized : currentState.documents
+        const projects = normalizeWorkspaceProjects(persisted.projects, documents)
         const activeDocumentId = typeof persisted.activeDocumentId === 'string'
           && documents.some((document) => document.id === persisted.activeDocumentId)
           ? persisted.activeDocumentId
@@ -374,7 +465,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
         return {
           ...currentState,
+          projects,
           documents,
+          activeProjectId: typeof persisted.activeProjectId === 'string' && projects.some((project) => project.id === persisted.activeProjectId)
+            ? persisted.activeProjectId
+            : documents.find((document) => document.id === activeDocumentId)?.projectId ?? projects[0].id,
           activeDocumentId,
           preferences: {
             editorRatio,

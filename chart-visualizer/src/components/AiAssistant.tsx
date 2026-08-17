@@ -8,12 +8,14 @@ import {
   GitMerge,
   ListPlus,
   MessageSquareText,
+  MessageSquarePlus,
   RefreshCw,
   RotateCcw,
   Send,
   Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   WandSparkles,
   Wrench,
   X,
@@ -28,11 +30,15 @@ import {
   type AiStatus,
 } from '@/lib/ai-contract'
 import { AiApiError, getAiStatus, requestAiChangeStream } from '@/lib/ai-client'
+import type { AiAttachment } from '@/lib/ai-contract'
 import { DEFAULT_AI_DIAGRAM_ACTION, runAiDiagramWorkflow, type AiWorkflowStage } from '@/lib/ai-diagram-workflow'
-import { AI_PROMPT_TEMPLATES, appendAiPrompt, type AiPromptTemplateId } from '@/lib/ai-prompt-templates'
+import { appendAiPrompt, type AiPromptTemplate } from '@/lib/ai-prompt-templates'
 import { renderDiagram } from '@/lib/diagram-engine'
+import { usePromptTemplateStore } from '@/store/prompt-template-store'
+import { useAiConversationStore } from '@/store/ai-conversation-store'
 import { useWorkspaceStore } from '@/store/workspace-store'
 import type { RenderError } from '@/types'
+import { AiAttachmentPicker } from '@/components/AiAttachmentPicker'
 
 interface AiAssistantProps {
   renderError: RenderError | null
@@ -55,13 +61,13 @@ const providerLabels: Record<AiProviderId, string> = {
   custom: '自定义 API',
 }
 
-const templateIcons: Record<AiPromptTemplateId, typeof Sparkles> = {
-  optimize: GitMerge,
-  complete: ListPlus,
-  diagnose: Wrench,
-  transform: RefreshCw,
-  review: MessageSquareText,
-  create: WandSparkles,
+function templateIcon(template: AiPromptTemplate): typeof Sparkles {
+  if (template.id === 'optimize') return GitMerge
+  if (template.id === 'complete' || template.id === 'approval' || template.id === 'sop') return ListPlus
+  if (template.id === 'diagnose') return Wrench
+  if (template.id === 'review') return MessageSquareText
+  if (template.id === 'create' || template.id === 'transform') return WandSparkles
+  return Sparkles
 }
 
 function readableError(error: unknown): string {
@@ -103,6 +109,7 @@ function streamingPreview(source: string): string {
 }
 
 export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
+  const promptTemplates = usePromptTemplateStore((state) => state.templates)
   const documents = useWorkspaceStore((state) => state.documents)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const preferences = useWorkspaceStore((state) => state.preferences)
@@ -110,6 +117,13 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
   const updateCode = useWorkspaceStore((state) => state.updateCode)
   const createVersion = useWorkspaceStore((state) => state.createVersion)
   const active = documents.find((document) => document.id === activeId)
+  const threads = useAiConversationStore((state) => state.threads)
+  const activeThreadByProject = useAiConversationStore((state) => state.activeThreadByProject)
+  const ensureThread = useAiConversationStore((state) => state.ensureThread)
+  const createThread = useAiConversationStore((state) => state.createThread)
+  const setActiveThread = useAiConversationStore((state) => state.setActiveThread)
+  const appendMessage = useAiConversationStore((state) => state.appendMessage)
+  const deleteThread = useAiConversationStore((state) => state.deleteThread)
   const controllerRef = useRef<AbortController | null>(null)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const [status, setStatus] = useState<AiStatus | null>(null)
@@ -121,8 +135,17 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
   const [appliedBefore, setAppliedBefore] = useState<string | null>(null)
   const [streamText, setStreamText] = useState('')
   const [workflowStage, setWorkflowStage] = useState<AiWorkflowStage | null>(null)
+  const [attachments, setAttachments] = useState<AiAttachment[]>([])
   const streamBufferRef = useRef('')
   const streamFrameRef = useRef(0)
+  const projectId = active?.projectId ?? ''
+  const projectThreads = threads.filter((thread) => thread.projectId === projectId)
+  const activeThreadId = activeThreadByProject[projectId]
+  const activeThread = projectThreads.find((thread) => thread.id === activeThreadId)
+
+  useEffect(() => {
+    if (projectId) ensureThread(projectId)
+  }, [ensureThread, projectId])
 
   const refreshStatus = async () => {
     setStatusError(null)
@@ -153,10 +176,16 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
     setAppliedBefore(null)
     setStreamText('')
     setWorkflowStage(null)
+    setAttachments([])
     streamBufferRef.current = ''
   }, [activeId])
 
   const selectedModel = parseAiModelKey(preferences.aiSelectedModel)
+  const selectedModelPreference = selectedModel
+    ? preferences.aiEnabledModels.find((item) => aiModelKey(item) === preferences.aiSelectedModel)
+    : undefined
+  const supportsVision = Boolean(selectedModel && selectedModel.provider !== 'deepseek' && selectedModelPreference?.vision)
+  const hasUnsupportedImage = attachments.some((item) => item.kind === 'image') && !supportsVision
   const selectedProviderStatus = selectedModel
     ? status?.providers.find((provider) => provider.id === selectedModel.provider)
     : null
@@ -168,13 +197,15 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
     && selectedModel
     && selectedProviderStatus?.configured
     && !running
-    && Boolean(prompt.trim()),
+    && Boolean(prompt.trim())
+    && !hasUnsupportedImage
   )
 
   const executeWorkflow = async (
     payload: Parameters<typeof runAiDiagramWorkflow>[0]['payload'],
     sourceCode: string,
     documentId: string,
+    threadId?: string,
   ) => {
     if (!active || !selectedModel) return
     controllerRef.current?.abort()
@@ -213,6 +244,13 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
       })
       if (controller.signal.aborted) return
       const response = result.response
+      if (threadId) appendMessage(threadId, 'assistant', response.summary)
+      setPrompt('')
+      setAttachments([])
+      if (response.action === 'explain') {
+        setCandidate(null)
+        return
+      }
       const stats = getAiLineStats(sourceCode, response.code)
       setCandidate({
         response,
@@ -237,17 +275,27 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
     }
   }
 
-  const run = async () => {
+  const run = async (phase: 'discuss' | 'generate') => {
     if (!active || !canSubmit || !selectedModel) return
+    const threadId = activeThread?.id ?? createThread(active.projectId)
+    const userPrompt = prompt.trim()
+    const conversation = (activeThread?.messages ?? []).map(({ role, content }) => ({ role, content }))
+    appendMessage(threadId, 'user', userPrompt)
+    const sourceCode = phase === 'generate' && candidate && !candidate.validationError
+      ? candidate.response.code
+      : active.code
     await executeWorkflow({
       action: DEFAULT_AI_DIAGRAM_ACTION,
-      prompt: prompt.trim(),
-      code: active.code,
+      prompt: userPrompt,
+      code: sourceCode,
       diagramKind: active.kind,
       provider: selectedModel.provider,
       model: selectedModel.model,
       renderError: renderError?.raw || renderError?.message,
-    }, active.code, active.id)
+      phase,
+      conversation,
+      attachments,
+    }, sourceCode, active.id, threadId)
   }
 
   const retryCandidateRepair = async () => {
@@ -298,14 +346,35 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
         </section>
       )}
 
+      <section className="ai-conversation-card" aria-label="项目 AI 对话">
+        <header>
+          <span><MessageSquareText size={15} /><strong>项目对话</strong><small>Mermaid 与可视化画布共享</small></span>
+          <div>
+            <select value={activeThread?.id ?? ''} onChange={(event) => setActiveThread(projectId, event.target.value)} aria-label="选择历史对话">
+              {projectThreads.map((thread) => <option key={thread.id} value={thread.id}>{thread.title}</option>)}
+            </select>
+            <button onClick={() => createThread(projectId)} title="开始新对话"><MessageSquarePlus size={14} />新对话</button>
+            {activeThread && <button className="ai-delete-chat" onClick={() => { if (window.confirm('删除当前对话记录？')) deleteThread(projectId, activeThread.id) }} title="删除当前对话" aria-label="删除当前对话"><Trash2 size={14} /></button>}
+          </div>
+        </header>
+        <div className="ai-message-list">
+          {activeThread?.messages.slice(-10).map((message) => (
+            <article key={message.id} className={message.role}>
+              <strong>{message.role === 'user' ? '你' : 'AI'}</strong><p>{message.content}</p>
+            </article>
+          ))}
+          {!activeThread?.messages.length && <p className="ai-conversation-empty">先说明目标，AI 会结合当前图追问和归纳；确认后再生成预览。</p>}
+        </div>
+      </section>
+
       <section className="ai-template-section" aria-labelledby="ai-template-heading">
         <header>
           <span><Sparkles size={15} /><strong id="ai-template-heading">专业任务模板</strong></span>
           <small>点击加入输入框，可继续补充细节</small>
         </header>
         <div className="ai-template-grid">
-        {AI_PROMPT_TEMPLATES.map((item) => {
-          const Icon = templateIcons[item.id]
+        {promptTemplates.map((item) => {
+          const Icon = templateIcon(item)
           return (
             <button
               key={item.id}
@@ -362,18 +431,26 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
           onKeyDown={(event) => {
             if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
               event.preventDefault()
-              void run()
+              void run('discuss')
             }
           }}
+        />
+        <AiAttachmentPicker
+          attachments={attachments}
+          supportsVision={supportsVision}
+          disabled={running || !selectedModel}
+          onChange={setAttachments}
+          onError={setRequestError}
         />
         <footer>
           <span><ShieldCheck size={12} />AI 会先理解当前图，再决定新建、修改、修复或解释</span>
           {running ? (
             <button className="ai-stop-button" onClick={() => controllerRef.current?.abort('user')}><X size={14} />停止</button>
           ) : (
-            <button className="ai-run-button" onClick={() => void run()} disabled={!canSubmit}>
-              <Send size={14} />分析并生成预览
-            </button>
+            <span className="ai-submit-actions">
+              <button onClick={() => void run('discuss')} disabled={!canSubmit}><MessageSquareText size={14} />继续沟通</button>
+              <button className="ai-run-button" onClick={() => void run('generate')} disabled={!canSubmit}><Send size={14} />生成预览</button>
+            </span>
           )}
         </footer>
       </section>

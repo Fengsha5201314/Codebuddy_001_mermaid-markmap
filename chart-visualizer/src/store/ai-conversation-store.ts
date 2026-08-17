@@ -1,0 +1,105 @@
+import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+
+export interface AiConversationMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+}
+
+export interface AiConversationThread {
+  id: string
+  projectId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: AiConversationMessage[]
+}
+
+function id(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+interface AiConversationState {
+  threads: AiConversationThread[]
+  activeThreadByProject: Record<string, string>
+  ensureThread: (projectId: string) => string
+  createThread: (projectId: string) => string
+  setActiveThread: (projectId: string, threadId: string) => void
+  appendMessage: (threadId: string, role: AiConversationMessage['role'], content: string) => void
+  deleteThread: (projectId: string, threadId: string) => void
+}
+
+export const useAiConversationStore = create<AiConversationState>()(
+  persist(
+    (set, get) => ({
+      threads: [],
+      activeThreadByProject: {},
+      ensureThread: (projectId) => {
+        const activeId = get().activeThreadByProject[projectId]
+        if (activeId && get().threads.some((thread) => thread.id === activeId)) return activeId
+        return get().createThread(projectId)
+      },
+      createThread: (projectId) => {
+        const timestamp = new Date().toISOString()
+        const thread: AiConversationThread = {
+          id: id('chat'),
+          projectId,
+          title: '新对话',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          messages: [],
+        }
+        set((state) => ({
+          threads: [thread, ...state.threads].slice(0, 80),
+          activeThreadByProject: { ...state.activeThreadByProject, [projectId]: thread.id },
+        }))
+        return thread.id
+      },
+      setActiveThread: (projectId, threadId) => {
+        if (get().threads.some((thread) => thread.id === threadId && thread.projectId === projectId)) {
+          set((state) => ({ activeThreadByProject: { ...state.activeThreadByProject, [projectId]: threadId } }))
+        }
+      },
+      appendMessage: (threadId, role, rawContent) => {
+        const content = rawContent.trim()
+        if (!content) return
+        const timestamp = new Date().toISOString()
+        set((state) => ({
+          threads: state.threads.map((thread) => {
+            if (thread.id !== threadId) return thread
+            const firstUserMessage = role === 'user' && !thread.messages.some((message) => message.role === 'user')
+            return {
+              ...thread,
+              title: firstUserMessage ? content.replace(/\s+/g, ' ').slice(0, 22) : thread.title,
+              updatedAt: timestamp,
+              messages: [...thread.messages, { id: id('message'), role, content: content.slice(0, 4000), createdAt: timestamp }].slice(-40),
+            }
+          }),
+        }))
+      },
+      deleteThread: (projectId, threadId) => {
+        let remaining = get().threads.filter((thread) => thread.id !== threadId)
+        let next = remaining.find((thread) => thread.projectId === projectId)
+        if (!next) {
+          const timestamp = new Date().toISOString()
+          next = {
+            id: id('chat'),
+            projectId,
+            title: '新对话',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            messages: [],
+          }
+          remaining = [next, ...remaining]
+        }
+        set((state) => ({
+          threads: remaining,
+          activeThreadByProject: { ...state.activeThreadByProject, [projectId]: next.id },
+        }))
+      },
+    }),
+    { name: 'fengsha-ai-conversations-v1', version: 1 },
+  ),
+)

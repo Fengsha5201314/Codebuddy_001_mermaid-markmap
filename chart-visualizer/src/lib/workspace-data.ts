@@ -1,10 +1,11 @@
 import { detectDiagramKind } from '@/lib/diagram-engine'
-import type { DiagramDocument, DiagramEngine, DiagramThemeId, DiagramVersion } from '@/types'
+import type { DiagramDocument, DiagramEngine, DiagramProject, DiagramThemeId, DiagramVersion } from '@/types'
 
 export interface WorkspaceBackup {
   schema: 'mermaid-workbench'
-  version: 2
+  version: 3
   exportedAt: string
+  projects: DiagramProject[]
   documents: DiagramDocument[]
 }
 
@@ -99,8 +100,19 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
       ? item.themeId as DiagramThemeId
       : 'paper'
 
+    const documentId = uniqueId(item.id, 'diagram', used)
+    const projectId = typeof item.projectId === 'string' && item.projectId.trim()
+      ? item.projectId.trim()
+      : `project-${sourceDocumentId ?? documentId}`
+    const parentDocumentId = typeof item.parentDocumentId === 'string' && item.parentDocumentId.trim()
+      ? item.parentDocumentId.trim()
+      : undefined
+
     return [{
-      id: uniqueId(item.id, 'diagram', used),
+      id: documentId,
+      projectId,
+      ...(parentDocumentId ? { parentDocumentId } : {}),
+      order: typeof item.order === 'number' && Number.isFinite(item.order) ? item.order : index,
       title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : `导入图表 ${index + 1}`,
       description: typeof item.description === 'string' ? item.description : '',
       engine,
@@ -123,11 +135,42 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
   })
 }
 
-export function createWorkspaceBackup(documents: DiagramDocument[]): WorkspaceBackup {
+export function normalizeWorkspaceProjects(value: unknown, documents: DiagramDocument[]): DiagramProject[] {
+  const fallbackDate = new Date().toISOString()
+  const provided = Array.isArray(value) ? value : []
+  const byId = new Map<string, DiagramProject>()
+  for (const item of provided) {
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id.trim()) continue
+    const id = item.id.trim()
+    if (byId.has(id)) continue
+    byId.set(id, {
+      id,
+      title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : '未命名项目',
+      description: typeof item.description === 'string' ? item.description : '',
+      createdAt: validDate(item.createdAt, fallbackDate),
+      updatedAt: validDate(item.updatedAt, fallbackDate),
+    })
+  }
+  for (const document of documents) {
+    if (byId.has(document.projectId)) continue
+    const canonical = documents.find((item) => item.projectId === document.projectId && !item.sourceDocumentId)
+    byId.set(document.projectId, {
+      id: document.projectId,
+      title: canonical?.title || document.title || '未命名项目',
+      description: canonical?.description || '',
+      createdAt: canonical?.createdAt || document.createdAt,
+      updatedAt: canonical?.updatedAt || document.updatedAt,
+    })
+  }
+  return [...byId.values()]
+}
+
+export function createWorkspaceBackup(documents: DiagramDocument[], projects?: DiagramProject[]): WorkspaceBackup {
   return {
     schema: 'mermaid-workbench',
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
+    projects: normalizeWorkspaceProjects(projects, documents),
     documents,
   }
 }
@@ -142,7 +185,7 @@ export function parseWorkspaceBackup(text: string): WorkspaceBackup {
   if (!isRecord(parsed) || parsed.schema !== 'mermaid-workbench') {
     throw new Error('这不是有效的风沙工作区备份文件。')
   }
-  if (parsed.version !== 1 && parsed.version !== 2) {
+  if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) {
     throw new Error('此备份版本暂不受支持，请先使用对应版本的风沙工作台打开。')
   }
   if (!Array.isArray(parsed.documents)) {
@@ -154,10 +197,13 @@ export function parseWorkspaceBackup(text: string): WorkspaceBackup {
     throw new Error('备份中包含损坏的图表记录，未替换当前工作区。')
   }
 
+  const projects = normalizeWorkspaceProjects(parsed.projects, documents)
+
   return {
     schema: 'mermaid-workbench',
-    version: 2,
+    version: 3,
     exportedAt: validDate(parsed.exportedAt, new Date().toISOString()),
+    projects,
     documents,
   }
 }

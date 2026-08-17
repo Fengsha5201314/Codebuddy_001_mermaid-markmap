@@ -18,6 +18,14 @@ export type WorkspaceView = 'canvas' | 'split' | 'source'
 
 export type DiagramEngine = 'mermaid' | 'drawio'
 
+export interface DiagramProject {
+  id: string
+  title: string
+  description: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface DiagramVersion {
   id: string
   engine: DiagramEngine
@@ -35,6 +43,11 @@ export interface DiagramVersion {
 
 export interface DiagramDocument {
   id: string
+  /** Project container. Mermaid and draw.io views of one diagram share this project. */
+  projectId: string
+  /** Optional canonical parent diagram for decomposed child diagrams. */
+  parentDocumentId?: string
+  order: number
   title: string
   description: string
   engine: DiagramEngine
@@ -116,6 +129,7 @@ export interface WorkspacePreferences {
   aiEnabledModels: Array<{
     provider: 'cpa' | 'deepseek' | 'custom'
     model: string
+    vision?: boolean
   }>
   aiSelectedModel: string
 }

@@ -11,6 +11,13 @@ export interface AiModelSelection {
   model: string
 }
 
+export interface AiAttachment {
+  kind: 'text' | 'image'
+  name: string
+  mimeType: string
+  content: string
+}
+
 export interface AiRequest {
   action: AiAction
   prompt: string
@@ -20,6 +27,12 @@ export interface AiRequest {
   provider: AiProviderId
   model: string
   renderError?: string
+  phase?: 'discuss' | 'generate'
+  conversation?: Array<{
+    role: 'user' | 'assistant'
+    content: string
+  }>
+  attachments?: AiAttachment[]
 }
 
 export interface AiResponse {

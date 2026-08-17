@@ -16,7 +16,10 @@ import {
   KeyRound,
   LoaderCircle,
   PanelLeft,
+  Pencil,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Server,
   Settings2,
@@ -24,6 +27,7 @@ import {
   Sparkles,
   Upload,
   Workflow,
+  Trash2,
   X,
 } from 'lucide-react'
 import { Modal } from '@/components/Modal'
@@ -52,6 +56,8 @@ import {
   type UpdateState,
 } from '@/lib/desktop-runtime'
 import { useWorkspaceStore } from '@/store/workspace-store'
+import { usePromptTemplateStore } from '@/store/prompt-template-store'
+import type { AiPromptTemplateCategory } from '@/lib/ai-prompt-templates'
 import type { WorkspaceView } from '@/types'
 
 interface SettingsDialogProps {
@@ -61,7 +67,7 @@ interface SettingsDialogProps {
   onBackup: () => void
 }
 
-type SettingsTab = 'workspace' | 'canvas' | 'ai' | 'data' | 'app'
+type SettingsTab = 'workspace' | 'canvas' | 'ai' | 'prompts' | 'data' | 'app'
 
 const emptyDrafts: Record<AiProviderId, ProviderConnectionDraft> = {
   cpa: { label: 'CPA AI', baseUrl: 'https://cpa.fengsha.online/v1', apiKey: '', showKey: false },
@@ -96,6 +102,11 @@ function readableError(error: unknown): string {
 export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDialogProps) {
   const preferences = useWorkspaceStore((state) => state.preferences)
   const updatePreferences = useWorkspaceStore((state) => state.updatePreferences)
+  const promptTemplates = usePromptTemplateStore((state) => state.templates)
+  const addPromptTemplate = usePromptTemplateStore((state) => state.addTemplate)
+  const updatePromptTemplate = usePromptTemplateStore((state) => state.updateTemplate)
+  const removePromptTemplate = usePromptTemplateStore((state) => state.removeTemplate)
+  const restorePromptTemplates = usePromptTemplateStore((state) => state.restoreDefaults)
   const [tab, setTab] = useState<SettingsTab>('workspace')
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
@@ -108,6 +119,13 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [appUpdate, setAppUpdate] = useState<UpdateState | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(promptTemplates[0]?.id ?? null)
+  const [promptDraft, setPromptDraft] = useState({ label: '', hint: '', prompt: '', category: '整理' as AiPromptTemplateCategory })
+
+  useEffect(() => {
+    const selected = promptTemplates.find((template) => template.id === selectedPromptId)
+    if (selected) setPromptDraft({ label: selected.label, hint: selected.hint, prompt: selected.prompt, category: selected.category })
+  }, [promptTemplates, selectedPromptId])
 
   const refreshStatus = async () => {
     setStatusError(null)
@@ -159,11 +177,21 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
     const exists = preferences.aiEnabledModels.some((item) => aiModelKey(item) === key)
     const aiEnabledModels = exists
       ? preferences.aiEnabledModels.filter((item) => aiModelKey(item) !== key)
-      : [...preferences.aiEnabledModels, selection]
+      : [...preferences.aiEnabledModels, { ...selection, vision: false }]
     const aiSelectedModel = exists && preferences.aiSelectedModel === key
       ? (aiEnabledModels[0] ? aiModelKey(aiEnabledModels[0]) : '')
       : (!preferences.aiSelectedModel ? key : preferences.aiSelectedModel)
     updatePreferences({ aiEnabledModels, aiSelectedModel })
+  }
+
+  const toggleModelVision = (selection: AiModelSelection) => {
+    if (selection.provider === 'deepseek') return
+    const key = aiModelKey(selection)
+    updatePreferences({
+      aiEnabledModels: preferences.aiEnabledModels.map((item) => aiModelKey(item) === key
+        ? { ...item, vision: !item.vision }
+        : item),
+    })
   }
 
   const availableModels = (provider: AiProviderId) => {
@@ -259,6 +287,9 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
           <button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>
             <Sparkles size={16} /><span><strong>AI 模型</strong><small>接口、密钥与模型</small></span><ChevronRight size={14} />
           </button>
+          <button className={tab === 'prompts' ? 'active' : ''} onClick={() => setTab('prompts')}>
+            <Pencil size={16} /><span><strong>AI 指令模板</strong><small>常用任务与系统提示词</small></span><ChevronRight size={14} />
+          </button>
           <button className={tab === 'data' ? 'active' : ''} onClick={() => setTab('data')}>
             <Database size={16} /><span><strong>数据与安全</strong><small>备份和隐私说明</small></span><ChevronRight size={14} />
           </button>
@@ -347,6 +378,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                   const currentModel = modelSelection[providerId] || options[0] || ''
                   const currentKey = currentModel ? aiModelKey({ provider: providerId, model: currentModel }) : ''
                   const enabled = preferences.aiEnabledModels.some((item) => aiModelKey(item) === currentKey)
+                  const enabledModel = preferences.aiEnabledModels.find((item) => aiModelKey(item) === currentKey)
                   const message = providerMessages[providerId]
                   const providerDirty = providerDraftIsDirty(providerId, draft, provider)
                   const modelFetchReady = canFetchProviderModels(providerId, draft, provider)
@@ -426,6 +458,14 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                           <button className={enabled ? 'enabled' : ''} disabled={!currentModel} onClick={() => currentModel && toggleModel({ provider: providerId, model: currentModel })}>
                             {enabled ? '停用' : '启用模型'}
                           </button>
+                          {enabled && providerId !== 'deepseek' && (
+                            <button
+                              className={enabledModel?.vision ? 'enabled vision-toggle' : 'vision-toggle'}
+                              onClick={() => toggleModelVision({ provider: providerId, model: currentModel })}
+                              title="仅当该模型本身支持图片输入时开启"
+                            >图片识别：{enabledModel?.vision ? '开' : '关'}</button>
+                          )}
+                          {enabled && providerId === 'deepseek' && <small className="model-capability-note">仅文字</small>}
                         </div>
                       )}
                       {message && <p className={`provider-message ${message.type}`}>
@@ -450,6 +490,53 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                     {preferences.aiEnabledModels.map((item) => <option key={aiModelKey(item)} value={aiModelKey(item)}>{providerLabels[item.provider]} · {item.model}</option>)}
                   </select></label>
                 )}
+              </div>
+            </section>
+          )}
+
+          {tab === 'prompts' && (
+            <section className="settings-page" aria-labelledby="prompt-settings-title">
+              <header className="settings-page-header compact-header">
+                <span><Pencil size={18} /></span>
+                <div><h3 id="prompt-settings-title">AI 指令模板</h3><small>管理右侧 AI 助手中的快捷任务。点击模板只会加入输入框，仍可继续补充要求。</small></div>
+                <button className="settings-refresh" onClick={() => {
+                  setSelectedPromptId(null)
+                  setPromptDraft({ label: '', hint: '', prompt: '', category: '整理' })
+                }}><Plus size={14} />新建</button>
+              </header>
+              <div className="prompt-settings-layout">
+                <div className="prompt-template-list" aria-label="AI 指令模板列表">
+                  {promptTemplates.map((template) => (
+                    <button key={template.id} className={selectedPromptId === template.id ? 'active' : ''} onClick={() => setSelectedPromptId(template.id)}>
+                      <span><strong>{template.label}</strong><small>{template.hint}</small></span><em>{template.category}</em>
+                    </button>
+                  ))}
+                  {!promptTemplates.length && <p>暂无模板，请新建一个常用任务。</p>}
+                </div>
+                <div className="prompt-template-editor">
+                  <div className="prompt-editor-grid">
+                    <label><span>模板名称</span><input value={promptDraft.label} maxLength={18} onChange={(event) => setPromptDraft((current) => ({ ...current, label: event.target.value }))} placeholder="例如：会议纪要转流程" /></label>
+                    <label><span>分类</span><select value={promptDraft.category} onChange={(event) => setPromptDraft((current) => ({ ...current, category: event.target.value as AiPromptTemplateCategory }))}><option>整理</option><option>流程</option><option>分析</option><option>创作</option></select></label>
+                  </div>
+                  <label><span>一句话说明</span><input value={promptDraft.hint} maxLength={36} onChange={(event) => setPromptDraft((current) => ({ ...current, hint: event.target.value }))} placeholder="让用户一眼看懂用途" /></label>
+                  <label className="prompt-body-field"><span>专业指令内容</span><textarea value={promptDraft.prompt} maxLength={4000} onChange={(event) => setPromptDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="描述 AI 应如何分析当前图、如何处理不确定信息，以及期望的输出标准。" /><small>{promptDraft.prompt.length}/4000</small></label>
+                  <div className="prompt-editor-actions">
+                    <button onClick={() => {
+                      if (!window.confirm('恢复内置办公模板？当前自定义修改会被替换。')) return
+                      restorePromptTemplates()
+                      setSelectedPromptId(null)
+                    }}><RotateCcw size={14} />恢复内置模板</button>
+                    {selectedPromptId && <button className="danger-link" onClick={() => {
+                      if (!window.confirm('删除这个指令模板？')) return
+                      removePromptTemplate(selectedPromptId)
+                      setSelectedPromptId(null)
+                    }}><Trash2 size={14} />删除</button>}
+                    <button className="primary" disabled={!promptDraft.label.trim() || !promptDraft.prompt.trim()} onClick={() => {
+                      if (selectedPromptId) updatePromptTemplate(selectedPromptId, promptDraft)
+                      else setSelectedPromptId(addPromptTemplate(promptDraft))
+                    }}><Save size={14} />{selectedPromptId ? '保存修改' : '添加模板'}</button>
+                  </div>
+                </div>
               </div>
             </section>
           )}

@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import {
+  ChevronDown,
+  ChevronRight,
   ChevronsLeft,
   ChevronsRight,
   Copy,
   FileCode2,
+  Folder,
+  FolderPlus,
   Frame,
   MoreHorizontal,
   Plus,
@@ -12,7 +17,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useWorkspaceStore } from '@/store/workspace-store'
-import type { DiagramDocument, DiagramKind } from '@/types'
+import type { DiagramDocument, DiagramKind, DiagramProject } from '@/types'
 import packageInfo from '../../package.json'
 
 const kindLabels: Record<DiagramKind, string> = {
@@ -34,7 +39,7 @@ interface SidebarProps {
   onNew: () => void
 }
 
-function DocumentItem({ document }: { document: DiagramDocument }) {
+function DocumentItem({ document, depth = 0 }: { document: DiagramDocument; depth?: number }) {
   const documents = useWorkspaceStore((state) => state.documents)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const setActive = useWorkspaceStore((state) => state.setActiveDocument)
@@ -69,7 +74,7 @@ function DocumentItem({ document }: { document: DiagramDocument }) {
   }
 
   return (
-    <div ref={rowRef} className={`document-row ${isActive ? 'active' : ''}`}>
+    <div ref={rowRef} className={`document-row ${isActive ? 'active' : ''}`} style={{ '--tree-depth': depth } as CSSProperties}>
       <button className="document-main" onClick={() => setActive(document.id)}>
         <span
           className={`kind-mark ${document.engine === 'drawio' ? 'kind-visual' : `kind-${document.kind}`}`}
@@ -102,21 +107,106 @@ function DocumentItem({ document }: { document: DiagramDocument }) {
   )
 }
 
+function ProjectGroup({ project, documents, forceOpen, onCreateChild }: {
+  project: DiagramProject
+  documents: DiagramDocument[]
+  forceOpen: boolean
+  onCreateChild: (projectId: string, parentDocumentId?: string) => void
+}) {
+  const activeId = useWorkspaceStore((state) => state.activeDocumentId)
+  const renameProject = useWorkspaceStore((state) => state.renameProject)
+  const deleteProject = useWorkspaceStore((state) => state.deleteProject)
+  const [expanded, setExpanded] = useState(true)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const canonical = documents.filter((document) => !document.sourceDocumentId)
+  const activeDocument = documents.find((document) => document.id === activeId)
+  const active = activeDocument?.sourceDocumentId
+    ? canonical.find((document) => document.id === activeDocument.sourceDocumentId)
+    : canonical.find((document) => document.id === activeId)
+
+  useEffect(() => {
+    if (forceOpen || active) setExpanded(true)
+  }, [active, forceOpen])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setMenuOpen(false)
+    }
+    globalThis.document.addEventListener('pointerdown', close)
+    return () => globalThis.document.removeEventListener('pointerdown', close)
+  }, [menuOpen])
+
+  const renderBranch = (parentDocumentId?: string, depth = 0, visited = new Set<string>()): ReactNode => (
+    canonical
+      .filter((document) => document.parentDocumentId === parentDocumentId || (!parentDocumentId && document.parentDocumentId && !canonical.some((item) => item.id === document.parentDocumentId)))
+      .sort((a, b) => a.order - b.order || b.updatedAt.localeCompare(a.updatedAt))
+      .map((document) => {
+        if (visited.has(document.id)) return null
+        const nextVisited = new Set(visited).add(document.id)
+        return (
+          <div key={document.id}>
+            <DocumentItem document={document} depth={depth} />
+            {renderBranch(document.id, depth + 1, nextVisited)}
+          </div>
+        )
+      })
+  )
+
+  const rename = () => {
+    const value = window.prompt('项目名称', project.title)
+    if (value?.trim()) renameProject(project.id, value)
+    setMenuOpen(false)
+  }
+
+  return (
+    <section className="project-group" ref={ref}>
+      <div className={`project-row ${active ? 'active' : ''}`}>
+        <button className="project-main" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Folder size={15} />
+          <span><strong>{project.title}</strong><small>{canonical.length} 个图表</small></span>
+        </button>
+        <button className="project-add" onClick={() => onCreateChild(project.id, active?.id)} title={active ? `在“${active.title}”下新建子图` : '在项目中新增图表'} aria-label="在项目中新增图表"><Plus size={14} /></button>
+        <button className="project-more" onClick={() => setMenuOpen((value) => !value)} aria-label="项目操作"><MoreHorizontal size={15} /></button>
+        {menuOpen && (
+          <div className="document-menu project-menu">
+            <button onClick={rename}><Folder size={14} />重命名项目</button>
+            <button onClick={() => { onCreateChild(project.id, active?.id); setMenuOpen(false) }}><FolderPlus size={14} />新增子图</button>
+            <button className="danger" onClick={() => {
+              if (window.confirm(`删除项目“${project.title}”及其中 ${canonical.length} 个图表？此操作无法撤销。`)) deleteProject(project.id)
+              setMenuOpen(false)
+            }}><Trash2 size={14} />删除项目</button>
+          </div>
+        )}
+      </div>
+      {expanded && <div className="project-documents">{renderBranch()}</div>}
+    </section>
+  )
+}
+
 export function Sidebar({ onNew }: SidebarProps) {
+  const projects = useWorkspaceStore((state) => state.projects)
   const documents = useWorkspaceStore((state) => state.documents)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const preferences = useWorkspaceStore((state) => state.preferences)
   const updatePreferences = useWorkspaceStore((state) => state.updatePreferences)
+  const createDocument = useWorkspaceStore((state) => state.createDocument)
   const [query, setQuery] = useState('')
   const active = documents.find((document) => document.id === activeId)
 
-  const visibleDocuments = useMemo(() => {
+  const visibleProjects = useMemo(() => {
     const search = query.trim().toLowerCase()
-    return [...documents]
-      .filter((document) => !document.sourceDocumentId)
-      .filter((document) => !search || [document.title, document.description, ...document.tags].join(' ').toLowerCase().includes(search))
-      .sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.updatedAt.localeCompare(a.updatedAt))
-  }, [documents, query])
+    return projects.flatMap((project) => {
+      const projectDocuments = documents.filter((document) => document.projectId === project.id)
+      const matchesProject = project.title.toLowerCase().includes(search)
+      const filtered = !search || matchesProject
+        ? projectDocuments
+        : projectDocuments.filter((document) => [document.title, document.description, ...document.tags].join(' ').toLowerCase().includes(search))
+      return filtered.some((document) => !document.sourceDocumentId) ? [{ project, documents: filtered }] : []
+    }).sort((a, b) => b.project.updatedAt.localeCompare(a.project.updatedAt))
+  }, [documents, projects, query])
 
   if (preferences.sidebarCollapsed) {
     return (
@@ -156,12 +246,20 @@ export function Sidebar({ onNew }: SidebarProps) {
 
       <div className="section-label">
         <span>本地项目</span>
-        <em>{documents.filter((document) => !document.sourceDocumentId).length}</em>
+        <em>{projects.length}</em>
       </div>
 
       <div className="document-list">
-        {visibleDocuments.map((document) => <DocumentItem key={document.id} document={document} />)}
-        {!visibleDocuments.length && (
+        {visibleProjects.map(({ project, documents: projectDocuments }) => (
+          <ProjectGroup
+            key={project.id}
+            project={project}
+            documents={projectDocuments}
+            forceOpen={Boolean(query)}
+            onCreateChild={(projectId, parentDocumentId) => createDocument(undefined, projectId, parentDocumentId)}
+          />
+        ))}
+        {!visibleProjects.length && (
           <div className="sidebar-empty">
             {query ? <FileCode2 size={24} /> : <Frame size={24} />}
             <p>没有匹配的图表</p>

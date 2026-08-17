@@ -25,6 +25,28 @@ describe('workspace store visual documents', () => {
     expect(document).not.toHaveProperty('sourceMermaid')
   })
 
+  it('同一项目可以创建多张有父子关系的图表', () => {
+    const source = useWorkspaceStore.getState().documents[0]
+    const originalProjectCount = useWorkspaceStore.getState().projects.length
+    const childId = useWorkspaceStore.getState().createDocument(undefined, source.projectId, source.id)
+    const state = useWorkspaceStore.getState()
+    const child = state.documents.find((item) => item.id === childId)
+
+    expect(state.projects).toHaveLength(originalProjectCount)
+    expect(child).toMatchObject({ projectId: source.projectId, parentDocumentId: source.id })
+    expect(state.activeProjectId).toBe(source.projectId)
+  })
+
+  it('项目重命名不会破坏子图和双画布关联', () => {
+    const source = useWorkspaceStore.getState().documents[0]
+    const childId = useWorkspaceStore.getState().createDocument(undefined, source.projectId, source.id)
+    useWorkspaceStore.getState().renameProject(source.projectId, '采购协同项目')
+
+    const state = useWorkspaceStore.getState()
+    expect(state.projects.find((item) => item.id === source.projectId)?.title).toBe('采购协同项目')
+    expect(state.documents.find((item) => item.id === childId)?.projectId).toBe(source.projectId)
+  })
+
   it('把 Mermaid 活动文档转换为可视化副本并保留原文档', () => {
     const before = useWorkspaceStore.getState()
     const source = before.documents.find((item) => item.id === before.activeDocumentId)!

@@ -3,8 +3,8 @@ import { AI_PROMPT_TEMPLATES, appendAiPrompt } from '@/lib/ai-prompt-templates'
 
 describe('AI prompt templates', () => {
   it('offers distinct professional tasks instead of hidden action modes', () => {
-    expect(AI_PROMPT_TEMPLATES).toHaveLength(6)
-    expect(new Set(AI_PROMPT_TEMPLATES.map((item) => item.id)).size).toBe(6)
+    expect(AI_PROMPT_TEMPLATES).toHaveLength(10)
+    expect(new Set(AI_PROMPT_TEMPLATES.map((item) => item.id)).size).toBe(10)
     expect(AI_PROMPT_TEMPLATES.every((item) => item.label && item.hint && item.prompt.length > 40)).toBe(true)
   })
 
