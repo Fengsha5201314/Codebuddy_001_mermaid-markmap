@@ -65,16 +65,41 @@ jobs:
           $repository = "${{ github.repository }}"
           gh api "repos/$repository/releases/tags/$tag" --silent 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo $repository --verify-tag --generate-notes --title "风沙图表工作台 $version"
-            if ($LASTEXITCODE -ne 0) {
+            $releaseReady = $false
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              gh release create $tag --repo $repository --verify-tag --generate-notes --title "风沙图表工作台 $version"
+              if ($LASTEXITCODE -eq 0) {
+                $releaseReady = $true
+                break
+              }
+              gh api "repos/$repository/releases/tags/$tag" --silent 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                $releaseReady = $true
+                break
+              }
+              if ($attempt -lt 5) {
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+            if (-not $releaseReady) {
               throw "GitHub Release 创建失败"
             }
           }
-          gh release upload $tag `
-            "release/Fengsha-Diagram-Setup-$version-x64.exe" `
-            "release/Fengsha-Diagram-Setup-$version-x64.exe.blockmap" `
-            "release/latest.yml" `
-            --clobber --repo $repository
-          if ($LASTEXITCODE -ne 0) {
+          $uploadComplete = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            gh release upload $tag `
+              "release/Fengsha-Diagram-Setup-$version-x64.exe" `
+              "release/Fengsha-Diagram-Setup-$version-x64.exe.blockmap" `
+              "release/latest.yml" `
+              --clobber --repo $repository
+            if ($LASTEXITCODE -eq 0) {
+              $uploadComplete = $true
+              break
+            }
+            if ($attempt -lt 5) {
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+          if (-not $uploadComplete) {
             throw "GitHub Release 资产上传失败"
           }
