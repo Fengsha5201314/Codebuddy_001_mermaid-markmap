@@ -7,17 +7,22 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electro
 import { autoUpdater } from 'electron-updater'
 import { createAiMiddleware } from '../server/ai-service.ts'
 import packageInfo from '../package.json' with { type: 'json' }
+import { resolveDesktopPort } from './origin.ts'
 import { isSameOriginNavigation, isTrustedLocalRequest, resolveDevelopmentRendererUrl } from './security.ts'
+import { migrateLegacyAiSettings, resolveDesktopUserDataDirectory } from './user-data.ts'
 
 const APP_NAME = '风沙图表工作台'
 const APP_ID = 'online.fengsha.diagram'
 const APP_HOST = '127.0.0.1'
-const requestedPort = Number(process.env.FENGSHA_DESKTOP_PORT)
-const APP_PORT = Number.isInteger(requestedPort) && requestedPort >= 1024 && requestedPort <= 65_535
-  ? requestedPort
-  : 0
 const RELEASES_URL = 'https://github.com/Fengsha5201314/Codebuddy_001_mermaid-markmap/releases'
 const SAFE_STORAGE_PREFIX = 'electron-safe-storage:v1:'
+
+const persistentUserDataDirectory = resolveDesktopUserDataDirectory(
+  app.getPath('appData'),
+  process.argv,
+  process.env.FENGSHA_DESKTOP_USER_DATA_DIR,
+)
+if (persistentUserDataDirectory) app.setPath('userData', persistentUserDataDirectory)
 
 type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'up-to-date' | 'error' | 'development'
 
@@ -229,6 +234,7 @@ async function startLocalServer() {
   if (localServer && localOrigin) return localOrigin
   const appRoot = app.isPackaged ? app.getAppPath() : process.cwd()
   const staticRoot = path.join(appRoot, 'dist')
+  const appPort = await resolveDesktopPort(app.getPath('userData'), process.env.FENGSHA_DESKTOP_PORT)
   const aiMiddleware = createAiMiddleware({
     settingsFile: path.join(app.getPath('userData'), 'ai-providers.json'),
     isApiKeyProtected: (storedValue) => storedValue.startsWith(SAFE_STORAGE_PREFIX),
@@ -274,7 +280,7 @@ async function startLocalServer() {
 
   await new Promise<void>((resolve, reject) => {
     localServer?.once('error', reject)
-    localServer?.listen(APP_PORT, APP_HOST, () => {
+    localServer?.listen(appPort, APP_HOST, () => {
       const address = localServer?.address() as AddressInfo | null
       if (!address) {
         reject(new Error('Local server did not expose a listening address.'))
@@ -363,6 +369,11 @@ if (!ownsLock) {
     mainWindow.focus()
   })
   app.whenReady().then(async () => {
+    try {
+      await migrateLegacyAiSettings(app.getPath('appData'), app.getPath('userData'))
+    } catch (error) {
+      console.warn('Unable to migrate legacy AI settings:', error)
+    }
     registerUpdater()
     registerIpc()
     await createMainWindow()
