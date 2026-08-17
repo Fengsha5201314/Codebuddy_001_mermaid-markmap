@@ -173,7 +173,11 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
     const threadId = activeThread?.id ?? createThread(document.projectId)
     const userPrompt = requestedPrompt.trim()
     const conversation = buildAiConversationContext(activeThread?.messages ?? [])
-    if (options?.appendUser !== false) appendMessage(threadId, 'user', userPrompt)
+    if (options?.appendUser !== false) {
+      appendMessage(threadId, 'user', userPrompt)
+      setPrompt('')
+      setAttachments([])
+    }
     controllerRef.current?.abort()
     const controller = new AbortController()
     controllerRef.current = controller
@@ -240,8 +244,6 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
       })
       if (controller.signal.aborted) return
       appendMessage(threadId, 'assistant', result.response.summary)
-      setPrompt('')
-      setAttachments([])
       if (result.response.action === 'explain') {
         if (!preserveCandidate) setCandidate(null)
         return
@@ -320,6 +322,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); setRequestError(null); window.requestAnimationFrame(() => promptRef.current?.focus()) }}
       >
         {running && <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite"><header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选内容和具体错误交给 AI，无需手工检查。' : streamText ? '完成后会先校验，不会立即覆盖。' : '正在等待模型返回首段内容。'}</small></span></header>{streamText && <pre>{visualAiStreamPreview(streamText)}<i aria-hidden="true" /></pre>}</div>}
+        {!running && requestError && streamText && <div className="ai-running-card interrupted"><header><AlertCircle size={18} /><span><strong>已保留中断前的输出</strong><small>你仍可查看模型已经返回的文字，重新发送后会从新请求继续。</small></span></header><pre>{visualAiStreamPreview(streamText)}</pre></div>}
         {requestError && <div className="ai-error-card"><AlertCircle size={16} /><span><strong>本次请求没有完成</strong><small>{requestError}</small></span></div>}
         {candidate && <section className={`ai-result-card ${candidate.validationError ? 'invalid' : ''} ${candidateStale || candidateConflict ? 'stale' : ''}`}><header><span className="ai-result-status">{candidate.validationError || candidateStale || candidateConflict ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}<strong>{candidateStale ? '已有新意见，候选需要更新' : candidateConflict ? '当前画布已变化，需要重新生成' : candidate.response.action === 'explain' ? '分析完成' : candidate.validationError ? '自动修复仍未通过' : candidate.repairAttempts ? '已自动修复并通过检查' : '候选已通过结构检查'}</strong></span><small>{selectedProvider?.label || providerLabels[candidate.response.provider]} · {candidate.response.model}</small></header><p className="ai-result-summary">{candidate.response.summary}</p>{candidate.response.changes.length > 0 && <ul className="ai-change-list">{candidate.response.changes.map((change, index) => <li key={`${change}-${index}`}><Check size={12} />{change}</li>)}</ul>}{candidate.validationError && <p className="ai-validation-error">{candidate.validationError}</p>}</section>}
       </AiConversationPanel>

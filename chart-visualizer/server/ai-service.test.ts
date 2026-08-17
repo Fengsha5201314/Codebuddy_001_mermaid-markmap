@@ -296,6 +296,56 @@ describe('AI service', () => {
     expect(request.stream).toBe(true)
   })
 
+  it('keeps an active stream alive when output continues beyond the initial timeout window', async () => {
+    vi.useFakeTimers()
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((delay) => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), delay)
+      return controller.signal
+    })
+    try {
+      const chunks = [
+        '{"summary":"较长画布仍在生成。","code":"flowchart LR\\n',
+        '  A --> B","changes":[]}',
+      ]
+      const encoder = new TextEncoder()
+      const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => new Response(new ReadableStream({
+        start(controller) {
+          let stopped = false
+          const emit = (content: string) => {
+            if (!stopped) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`))
+          }
+          setTimeout(() => emit(chunks[0]), 80_000)
+          setTimeout(() => {
+            if (stopped) return
+            emit(chunks[1])
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+            controller.close()
+          }, 160_000)
+          init?.signal?.addEventListener('abort', () => {
+            stopped = true
+            controller.error(init.signal?.reason)
+          }, { once: true })
+        },
+      }), { status: 200, headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } }))
+
+      const request = runAiRequestStream(config, payload, () => undefined, fetchMock as typeof fetch)
+      const outcome = request.then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      )
+      await vi.advanceTimersByTimeAsync(80_000)
+      await vi.advanceTimersByTimeAsync(80_000)
+
+      const result = await outcome
+      if (result.error) throw result.error
+      expect(result.value).toMatchObject({ summary: '较长画布仍在生成。' })
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('serializes diagram text as JSON data so tag-like prompt injection cannot change field boundaries', async () => {
     const injectedPayload = {
       ...payload,

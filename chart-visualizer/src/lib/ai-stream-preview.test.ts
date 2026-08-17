@@ -4,9 +4,10 @@ import { visualAiStreamPreview } from '@/lib/ai-stream-preview'
 describe('visual AI streaming preview', () => {
   it('shows live progress for partial draw.io XML instead of a frozen summary', () => {
     const first = visualAiStreamPreview('{"summary":"新增复核","code":"<mxfile><diagram>')
-    const second = visualAiStreamPreview('{"summary":"新增复核","code":"<mxfile><diagram><mxGraphModel>')
+    const second = visualAiStreamPreview('{"summary":"新增复核","code":"<mxfile><diagram><mxGraphModel><root><mxCell id=\\"review\\"')
     expect(first).toContain('新增复核')
-    expect(first).toContain('正在生成画布结构')
+    expect(first).toContain('<mxfile><diagram>')
+    expect(second).toContain('<mxCell id="review"')
     expect(second).not.toBe(first)
   })
 

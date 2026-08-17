@@ -365,6 +365,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .ai-running-card pre { max-height: 230px; margin: 10px 0 0; padding: 10px; overflow: auto; border: 1px solid #d4e1ee; border-radius: 6px; background: #fff; color: #334a63; font: 10px/1.65 "Cascadia Code",Consolas,monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-running-card pre i { width: 2px; height: 1.1em; margin-left: 2px; display: inline-block; vertical-align: -.15em; background: #2f6da8; animation: stream-caret .8s steps(1,end) infinite; }
 @keyframes stream-caret { 50% { opacity: 0; } }
+.ai-running-card.interrupted { border-color: #e6cda7; background: #fffaf2; color: #9a6a2b; }
 .ai-error-card { border-color: #ecc4bd; background: #fff6f4; color: #ab4b40; }
 .ai-running-card span,.ai-error-card span { display: grid; gap: 2px; }
 .ai-running-card strong,.ai-error-card strong { color: #41566d; font-size: 9px; }

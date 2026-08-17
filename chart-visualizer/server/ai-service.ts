@@ -582,6 +582,28 @@ function requestSignal(timeoutMs: number, externalSignal?: AbortSignal): AbortSi
   return externalSignal ? AbortSignal.any([externalSignal, timeoutSignal]) : timeoutSignal
 }
 
+function activityTimeout(timeoutMs: number, externalSignal?: AbortSignal) {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const abortFromExternal = () => controller.abort(externalSignal?.reason)
+  const refresh = () => {
+    if (controller.signal.aborted) return
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      controller.abort(new DOMException('AI stream was inactive for too long.', 'TimeoutError'))
+    }, timeoutMs)
+  }
+  const dispose = () => {
+    if (timer) clearTimeout(timer)
+    externalSignal?.removeEventListener('abort', abortFromExternal)
+  }
+
+  if (externalSignal?.aborted) abortFromExternal()
+  else externalSignal?.addEventListener('abort', abortFromExternal, { once: true })
+  refresh()
+  return { signal: controller.signal, refresh, dispose }
+}
+
 async function fetchFromProvider(
   providerLabel: string,
   fetchImpl: typeof fetch,
@@ -694,89 +716,95 @@ export async function runAiRequestStream(
 ) {
   const payload = validatePayload(rawPayload)
   const provider = resolveProvider(config, payload.provider)
-  const response = await fetchFromProvider(provider.label, fetchImpl, `${provider.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${provider.apiKey}`,
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify({
-      model: payload.model,
-      messages: [
-        { role: 'system', content: systemInstruction(payload.action, payload.diagramEngine, payload.phase) },
-        { role: 'user', content: userMessageContent(payload) },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_tokens: 8000,
-      stream: true,
-    }),
-    redirect: 'error',
-    signal: requestSignal(90_000, signal),
-  })
+  const streamTimeout = activityTimeout(120_000, signal)
+  try {
+    const response = await fetchFromProvider(provider.label, fetchImpl, `${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify({
+        model: payload.model,
+        messages: [
+          { role: 'system', content: systemInstruction(payload.action, payload.diagramEngine, payload.phase) },
+          { role: 'user', content: userMessageContent(payload) },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        max_tokens: 8000,
+        stream: true,
+      }),
+      redirect: 'error',
+      signal: streamTimeout.signal,
+    })
 
-  if (!response.ok) throw upstreamError(provider.label, await upstreamJson(response))
+    if (!response.ok) throw upstreamError(provider.label, await upstreamJson(response))
 
-  if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
-    const body = await upstreamJson(response)
-    const content = body && typeof body === 'object'
-      ? (body as OpenAiStreamChunk).choices?.[0]?.message?.content
-      : undefined
-    if (typeof content !== 'string') throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
-    await onDelta(content)
+    if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+      const body = await upstreamJson(response)
+      const content = body && typeof body === 'object'
+        ? (body as OpenAiStreamChunk).choices?.[0]?.message?.content
+        : undefined
+      if (typeof content !== 'string') throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
+      await onDelta(content)
+      return completedAiResponse(payload, content)
+    }
+
+    if (!response.body) throw new AiServiceError('AI 流式响应不可读取。', 'AI_UPSTREAM_ERROR', 502)
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let pending = ''
+    let content = ''
+    let receivedBytes = 0
+
+    const consumeLine = async (rawLine: string) => {
+      const line = rawLine.trim()
+      if (!line.startsWith('data:')) return
+      const data = line.slice(5).trim()
+      if (!data || data === '[DONE]') return
+      let chunk: OpenAiStreamChunk
+      try {
+        chunk = JSON.parse(data) as OpenAiStreamChunk
+      } catch {
+        throw new AiServiceError('AI 流式响应格式不正确。', 'AI_UPSTREAM_ERROR', 502)
+      }
+      if (typeof chunk.error?.message === 'string') throw upstreamError(provider.label, chunk)
+      const delta = chunk.choices?.[0]?.delta?.content
+      if (typeof delta !== 'string' || !delta) return
+      content += delta
+      if (Buffer.byteLength(content, 'utf8') > MAX_UPSTREAM_RESPONSE_BYTES) {
+        throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
+      }
+      await onDelta(delta)
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      streamTimeout.refresh()
+      receivedBytes += value.byteLength
+      if (receivedBytes > MAX_UPSTREAM_RESPONSE_BYTES) {
+        await reader.cancel()
+        throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
+      }
+      pending += decoder.decode(value, { stream: true })
+      let newline = pending.indexOf('\n')
+      while (newline >= 0) {
+        const line = pending.slice(0, newline)
+        pending = pending.slice(newline + 1)
+        await consumeLine(line)
+        newline = pending.indexOf('\n')
+      }
+    }
+    pending += decoder.decode()
+    if (pending.trim()) await consumeLine(pending)
+    if (!content) throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
     return completedAiResponse(payload, content)
+  } finally {
+    streamTimeout.dispose()
   }
-
-  if (!response.body) throw new AiServiceError('AI 流式响应不可读取。', 'AI_UPSTREAM_ERROR', 502)
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let pending = ''
-  let content = ''
-  let receivedBytes = 0
-
-  const consumeLine = async (rawLine: string) => {
-    const line = rawLine.trim()
-    if (!line.startsWith('data:')) return
-    const data = line.slice(5).trim()
-    if (!data || data === '[DONE]') return
-    let chunk: OpenAiStreamChunk
-    try {
-      chunk = JSON.parse(data) as OpenAiStreamChunk
-    } catch {
-      throw new AiServiceError('AI 流式响应格式不正确。', 'AI_UPSTREAM_ERROR', 502)
-    }
-    if (typeof chunk.error?.message === 'string') throw upstreamError(provider.label, chunk)
-    const delta = chunk.choices?.[0]?.delta?.content
-    if (typeof delta !== 'string' || !delta) return
-    content += delta
-    if (Buffer.byteLength(content, 'utf8') > MAX_UPSTREAM_RESPONSE_BYTES) {
-      throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
-    }
-    await onDelta(delta)
-  }
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    receivedBytes += value.byteLength
-    if (receivedBytes > MAX_UPSTREAM_RESPONSE_BYTES) {
-      await reader.cancel()
-      throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
-    }
-    pending += decoder.decode(value, { stream: true })
-    let newline = pending.indexOf('\n')
-    while (newline >= 0) {
-      const line = pending.slice(0, newline)
-      pending = pending.slice(newline + 1)
-      await consumeLine(line)
-      newline = pending.indexOf('\n')
-    }
-  }
-  pending += decoder.decode()
-  if (pending.trim()) await consumeLine(pending)
-  if (!content) throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
-  return completedAiResponse(payload, content)
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

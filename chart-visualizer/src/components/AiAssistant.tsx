@@ -264,8 +264,6 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
       if (controller.signal.aborted) return
       const response = result.response
       if (threadId) appendMessage(threadId, 'assistant', response.summary)
-      setPrompt('')
-      setAttachments([])
       if (response.action === 'explain') {
         if (!preserveCandidate) setCandidate(null)
         return
@@ -314,7 +312,11 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
     const threadId = activeThread?.id ?? createThread(active.projectId)
     const userPrompt = requestedPrompt.trim()
     const conversation = buildAiConversationContext(activeThread?.messages ?? [])
-    if (options?.appendUser !== false) appendMessage(threadId, 'user', userPrompt)
+    if (options?.appendUser !== false) {
+      appendMessage(threadId, 'user', userPrompt)
+      setPrompt('')
+      setAttachments([])
+    }
     const canBuildOnCandidate = phase === 'generate'
       && candidate
       && !candidate.validationError
@@ -422,6 +424,13 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
           <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite">
             <header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选源码和具体错误交给 AI，无需手工检查。' : streamText ? '内容会边生成边显示，完成后自动检查图表。' : '已发送请求，正在等待模型返回首段内容。'}</small></span></header>
             {streamText && <pre>{streamingPreview(streamText)}<i aria-hidden="true" /></pre>}
+          </div>
+        )}
+
+        {!running && requestError && streamText && (
+          <div className="ai-running-card interrupted">
+            <header><AlertCircle size={18} /><span><strong>已保留中断前的输出</strong><small>你仍可查看模型已经返回的文字，重新发送后会从新请求继续。</small></span></header>
+            <pre>{streamingPreview(streamText)}</pre>
           </div>
         )}
 

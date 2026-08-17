@@ -28,7 +28,7 @@ export function visualAiStreamPreview(source: string): string {
   const code = partialJsonString(source, 'code')
   if (code) {
     if (code.trimStart().startsWith('<')) {
-      return `${summary || '正在生成可视化画布'}\n\n正在生成画布结构 · 已接收 ${code.length} 字符`
+      return `${summary || '正在生成可视化画布'}\n\n正在生成 draw.io XML…\n${code.slice(-1800)}`
     }
     return `${summary || '正在生成图表结构'}\n\n正在生成 Mermaid 源码…\n${code.slice(-1200)}`
   }
