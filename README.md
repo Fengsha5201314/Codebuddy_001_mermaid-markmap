@@ -77,8 +77,9 @@ sequenceDiagram
     participant P as CPA / DeepSeek / 自定义接口
     U->>S: 填写接口地址和 API Key
     U->>S: 保存连接 → 获取模型 → 启用模型
-    U->>A: 选择模型与操作，输入要求
-    A->>P: 发送当前图表与本次指令
+    U->>A: 选择模型，点击任务模板或输入要求
+    A->>A: 识别当前页面是否有图表内容
+    A->>P: 发送当前图表与本次指令，统一判断意图
     P-->>A: 流式返回生成内容
     A->>A: 校验 Mermaid 或画布 XML
     A-->>U: 展示摘要、变更和预览
@@ -86,7 +87,7 @@ sequenceDiagram
     A->>A: 应用前保存版本快照
 ```
 
-AI 不会自动覆盖当前图表。生成完成后请先检查结果，再点击 **确认应用**。具体配置见 [AI 模型接入说明](chart-visualizer/docs/ai-setup.md)。
+任务模板只负责把专业提示词加入输入框，不会切换隐藏的操作模式。只要当前页面有图表，AI 就会先读取当前图再判断需要修改、修复、转换或解释；页面无内容时才创建新图。AI 不会自动覆盖当前图表，生成完成后请检查结果，再点击 **确认应用**。具体配置见 [AI 模型接入说明](chart-visualizer/docs/ai-setup.md)。
 
 ## 本地、联网与隐私边界
 
@@ -113,6 +114,8 @@ flowchart TB
 |---|---|
 | Mermaid 代码图表 | PNG、SVG、JPG、MMD、Markdown |
 | 可视化画布 | draw.io 源文件、SVG、PNG、PDF |
+
+可视化画布导出的 SVG 会自动转换为原生 SVG 文字，避免 Windows 图片查看器只显示图形、不显示中文标签。
 
 - 右上角 **导出交付**：导出当前图表。
 - 右上角 **更多 → 导入**：导入 `.mmd`、`.mermaid`、`.md`、`.txt`、`.drawio`，或导入本工具生成的 JSON 工作区备份。

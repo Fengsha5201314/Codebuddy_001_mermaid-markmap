@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -61,9 +61,21 @@ try {
   await page.locator('.visual-canvas-frame.is-visible').waitFor({ state: 'visible', timeout: 30_000 })
   await page.evaluate(() => {
     window.__fengshaCapturedDownloads = []
+    window.__fengshaLastBlobContent = ''
+    const originalCreateObjectURL = URL.createObjectURL.bind(URL)
+    URL.createObjectURL = function captureBlob(blob) {
+      void blob.text().then((content) => { window.__fengshaLastBlobContent = content })
+      return originalCreateObjectURL(blob)
+    }
     const originalClick = HTMLAnchorElement.prototype.click
     HTMLAnchorElement.prototype.click = function captureDownload() {
-      window.__fengshaCapturedDownloads.push({ fileName: this.download, href: this.href })
+      const captured = { fileName: this.download, href: this.href, content: '' }
+      window.__fengshaCapturedDownloads.push(captured)
+      if (this.href.startsWith('blob:') || this.href.startsWith('data:image/svg+xml')) {
+        void fetch(this.href)
+          .then((response) => response.text())
+          .then((content) => { captured.content = content })
+      }
       return originalClick.call(this)
     }
   })
@@ -73,26 +85,35 @@ try {
   await page.getByRole('button', { name: '\u4e0b\u8f7d\u6587\u4ef6' }).click()
   const download = await downloadPromise
   const exportError = await page.locator('.visual-export-error').textContent().catch(() => null)
+  await page.waitForFunction(() => Boolean(window.__fengshaLastBlobContent), null, { timeout: 5_000 }).catch(() => undefined)
   const capturedDownloads = await page.evaluate(() => window.__fengshaCapturedDownloads ?? [])
+  const capturedBlobContent = await page.evaluate(() => window.__fengshaLastBlobContent ?? '')
   const svgDownload = capturedDownloads.find((item) => item.fileName.endsWith('.svg'))
   check(Boolean(download?.suggestedFilename().endsWith('.svg') || (svgDownload && /^(blob:|data:image\/svg\+xml)/.test(svgDownload.href))), `\u672c\u5730\u753b\u5e03\u5e94\u80fd\u5bfc\u51fa SVG \u4ea4\u4ed8\u6587\u4ef6${exportError ? `\uff1a${exportError}` : ''}`)
-  await download?.delete().catch(() => undefined)
+  const downloadedPath = download ? path.join(userDataDirectory, 'exported.svg') : null
+  if (download && downloadedPath) await download.saveAs(downloadedPath).catch(() => undefined)
+  const savedSvg = downloadedPath ? await readFile(downloadedPath, 'utf8').catch(() => '') : ''
+  const exportedSvg = savedSvg || capturedBlobContent || svgDownload?.content || ''
+  check(exportedSvg.includes('<text'), `\u5bfc\u51fa SVG \u5e94\u5305\u542b\u53ef\u8de8\u67e5\u770b\u5668\u663e\u793a\u7684\u539f\u751f SVG \u6587\u5b57\uff08\u5b9e\u9645\u8bfb\u53d6 ${exportedSvg.length} \u5b57\u7b26\uff0c${exportedSvg.slice(0, 80)}\uff09`)
+  check(!exportedSvg.includes('<foreignObject'), '\u5bfc\u51fa SVG \u4e0d\u5e94\u4f9d\u8d56 Windows \u67e5\u770b\u5668\u65e0\u6cd5\u7a33\u5b9a\u663e\u793a\u7684 HTML foreignObject')
+  check(!exportedSvg.includes('light-dark('), '\u5bfc\u51fa SVG \u4e0d\u5e94\u4fdd\u7559\u67e5\u770b\u5668\u517c\u5bb9\u6027\u4e0d\u7a33\u5b9a\u7684 light-dark \u6837\u5f0f')
   if (await page.getByText('\u5bfc\u51fa\u53ef\u89c6\u5316\u753b\u5e03').count()) await page.getByRole('button', { name: '\u5173\u95ed' }).click()
   const aiButton = page.getByRole('button', { name: /AI \u52a9\u624b/ })
   check(await aiButton.isEnabled(), '\u53ef\u89c6\u5316\u753b\u5e03\u6a21\u5f0f\u5fc5\u987b\u80fd\u6253\u5f00 AI \u52a9\u624b')
   check(await page.getByRole('button', { name: /\u8fd4\u56de Mermaid \u539f\u56fe/ }).count() === 1, '\u753b\u5e03\u5fc5\u987b\u63d0\u4f9b\u660e\u786e\u7684\u201c\u8fd4\u56de Mermaid \u539f\u56fe\u201d\u5165\u53e3')
   await aiButton.click()
   await page.locator('.visual-ai-assistant').waitFor({ state: 'visible' })
-  check(await page.getByRole('radio', { name: /AI \u91cd\u7ed8/ }).count() === 1, '\u753b\u5e03 AI \u5e94\u63d0\u4f9b\u91cd\u65b0\u751f\u6210\u80fd\u529b')
-  check(await page.getByRole('radio', { name: /\u6309\u8981\u6c42\u4fee\u6539/ }).count() === 1, '\u753b\u5e03 AI \u5e94\u63d0\u4f9b\u4fdd\u7559\u5e03\u5c40\u7684\u4fee\u6539\u80fd\u529b')
+  check(await page.getByRole('button', { name: /\u4f18\u5316\u7ed3\u6784/ }).count() === 1, '\u753b\u5e03 AI \u5e94\u63d0\u4f9b\u7ed3\u6784\u4f18\u5316\u63d0\u793a\u8bcd\u6a21\u677f')
+  check(await page.getByRole('button', { name: /\u4ece\u63cf\u8ff0\u521b\u5efa/ }).count() === 1, '\u753b\u5e03 AI \u5e94\u63d0\u4f9b\u4ece\u63cf\u8ff0\u521b\u5efa\u7684\u63d0\u793a\u8bcd\u6a21\u677f')
+  await page.getByRole('button', { name: /\u4f18\u5316\u7ed3\u6784/ }).click()
+  check((await page.getByLabel(/\u63cf\u8ff0\u8981\u5b8c\u6210\u7684\u5de5\u4f5c/).inputValue()).includes('\u4e1a\u52a1\u76ee\u6807'), '\u70b9\u51fb\u4e13\u4e1a\u6a21\u677f\u5e94\u628a\u63d0\u793a\u8bcd\u52a0\u5165\u8f93\u5165\u6846')
   await page.getByRole('button', { name: '\u5173\u95ed\u753b\u5e03 AI' }).click()
 
-  const projectButtons = page.locator('.document-main')
-  await projectButtons.filter({ hasText: '\u8ba2\u5355\u5c65\u7ea6\u6cf3\u9053\u56fe' }).nth(1).click()
+  await page.getByRole('button', { name: /\u8fd4\u56de Mermaid \u539f\u56fe/ }).click()
   await page.locator('.editor-preview-workspace').waitFor({ state: 'visible' })
 
   const returnStarted = Date.now()
-  await projectButtons.filter({ hasText: '\u8ba2\u5355\u5c65\u7ea6\u6cf3\u9053\u56fe - \u53ef\u89c6\u5316' }).click()
+  await page.locator('.document-main').filter({ hasText: '\u8ba2\u5355\u5c65\u7ea6\u6cf3\u9053\u56fe - \u53ef\u89c6\u5316' }).click()
   await page.locator('.visual-canvas-frame.is-visible').waitFor({ state: 'visible', timeout: 30_000 })
   const returnDurationMs = Date.now() - returnStarted
 

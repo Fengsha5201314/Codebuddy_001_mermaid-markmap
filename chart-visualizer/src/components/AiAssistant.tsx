@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   Check,
   CheckCircle2,
   FileCode2,
   LoaderCircle,
+  GitMerge,
+  ListPlus,
   MessageSquareText,
-  PencilLine,
   RefreshCw,
   RotateCcw,
   Send,
@@ -22,12 +23,13 @@ import {
   aiModelKey,
   getAiLineStats,
   parseAiModelKey,
-  type AiAction,
   type AiProviderId,
   type AiResponse,
   type AiStatus,
 } from '@/lib/ai-contract'
 import { AiApiError, getAiStatus, requestAiChangeStream } from '@/lib/ai-client'
+import { DEFAULT_AI_DIAGRAM_ACTION, runAiDiagramWorkflow, type AiWorkflowStage } from '@/lib/ai-diagram-workflow'
+import { AI_PROMPT_TEMPLATES, appendAiPrompt, type AiPromptTemplateId } from '@/lib/ai-prompt-templates'
 import { renderDiagram } from '@/lib/diagram-engine'
 import { useWorkspaceStore } from '@/store/workspace-store'
 import type { RenderError } from '@/types'
@@ -44,6 +46,7 @@ interface AiCandidate {
   removed: number
   validationError: string | null
   documentId: string
+  repairAttempts: number
 }
 
 const providerLabels: Record<AiProviderId, string> = {
@@ -52,23 +55,13 @@ const providerLabels: Record<AiProviderId, string> = {
   custom: '自定义 API',
 }
 
-const actions: Array<{
-  id: AiAction
-  label: string
-  hint: string
-  icon: typeof Sparkles
-}> = [
-  { id: 'generate', label: '生成新图', hint: '把一段描述变成完整流程图', icon: WandSparkles },
-  { id: 'edit', label: '按要求修改', hint: '保留原图，只调整指定内容', icon: PencilLine },
-  { id: 'fix', label: '修复问题', hint: '检查并修复 Mermaid 语法', icon: Wrench },
-  { id: 'explain', label: '解释当前图', hint: '梳理主路径、分支与风险', icon: MessageSquareText },
-]
-
-const placeholders: Record<AiAction, string> = {
-  generate: '例如：生成一个采购审批泳道图，包含申请人、部门经理、采购和财务……',
-  edit: '例如：在付款前增加财务复核；驳回后返回申请人修改……',
-  fix: '可选：补充希望保留的内容，留空则自动检查并修复。',
-  explain: '可选：重点解释哪些环节？留空则分析完整流程。',
+const templateIcons: Record<AiPromptTemplateId, typeof Sparkles> = {
+  optimize: GitMerge,
+  complete: ListPlus,
+  diagnose: Wrench,
+  transform: RefreshCw,
+  review: MessageSquareText,
+  create: WandSparkles,
 }
 
 function readableError(error: unknown): string {
@@ -118,15 +111,16 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
   const createVersion = useWorkspaceStore((state) => state.createVersion)
   const active = documents.find((document) => document.id === activeId)
   const controllerRef = useRef<AbortController | null>(null)
+  const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
-  const [action, setAction] = useState<AiAction>('generate')
   const [prompt, setPrompt] = useState('')
   const [running, setRunning] = useState(false)
   const [candidate, setCandidate] = useState<AiCandidate | null>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
   const [appliedBefore, setAppliedBefore] = useState<string | null>(null)
   const [streamText, setStreamText] = useState('')
+  const [workflowStage, setWorkflowStage] = useState<AiWorkflowStage | null>(null)
   const streamBufferRef = useRef('')
   const streamFrameRef = useRef(0)
 
@@ -153,15 +147,15 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
 
   useEffect(() => {
     controllerRef.current?.abort()
+    setPrompt('')
     setCandidate(null)
     setRequestError(null)
     setAppliedBefore(null)
     setStreamText('')
+    setWorkflowStage(null)
     streamBufferRef.current = ''
   }, [activeId])
 
-  const selectedAction = useMemo(() => actions.find((item) => item.id === action) ?? actions[0], [action])
-  const SelectedActionIcon = selectedAction.icon
   const selectedModel = parseAiModelKey(preferences.aiSelectedModel)
   const selectedProviderStatus = selectedModel
     ? status?.providers.find((provider) => provider.id === selectedModel.provider)
@@ -174,49 +168,51 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
     && selectedModel
     && selectedProviderStatus?.configured
     && !running
-    && ((action !== 'generate' && action !== 'edit') || prompt.trim()),
+    && Boolean(prompt.trim()),
   )
 
-  const run = async () => {
-    if (!active || !canSubmit || !selectedModel) return
+  const executeWorkflow = async (
+    payload: Parameters<typeof runAiDiagramWorkflow>[0]['payload'],
+    sourceCode: string,
+    documentId: string,
+  ) => {
+    if (!active || !selectedModel) return
     controllerRef.current?.abort()
     const controller = new AbortController()
     controllerRef.current = controller
-    const sourceCode = active.code
-    const documentId = active.id
     setRunning(true)
     setCandidate(null)
     setRequestError(null)
     setAppliedBefore(null)
     setStreamText('')
+    setWorkflowStage(null)
     streamBufferRef.current = ''
     try {
-      const response = await requestAiChangeStream({
-        action,
-        prompt: prompt.trim(),
-        code: sourceCode,
-        diagramKind: active.kind,
-        provider: selectedModel.provider,
-        model: selectedModel.model,
-        renderError: renderError?.raw || renderError?.message,
-      }, (delta) => {
-        streamBufferRef.current += delta
-        if (streamFrameRef.current) return
-        streamFrameRef.current = window.requestAnimationFrame(() => {
-          streamFrameRef.current = 0
-          setStreamText(streamBufferRef.current)
-        })
-      }, controller.signal)
+      const result = await runAiDiagramWorkflow({
+        payload,
+        request: (requestPayload, onDelta, signal) => requestAiChangeStream(requestPayload, onDelta ?? (() => undefined), signal),
+        validate: (code) => renderDiagram(code, getDiagramTheme(active.themeId)),
+        onDelta: (delta) => {
+          streamBufferRef.current += delta
+          if (streamFrameRef.current) return
+          streamFrameRef.current = window.requestAnimationFrame(() => {
+            streamFrameRef.current = 0
+            setStreamText(streamBufferRef.current)
+          })
+        },
+        onStage: (stage) => {
+          setWorkflowStage(stage)
+          if (stage === 'repairing') {
+            window.cancelAnimationFrame(streamFrameRef.current)
+            streamFrameRef.current = 0
+            streamBufferRef.current = ''
+            setStreamText('')
+          }
+        },
+        signal: controller.signal,
+      })
       if (controller.signal.aborted) return
-
-      let validationError: string | null = null
-      if (action !== 'explain') {
-        try {
-          await renderDiagram(response.code, getDiagramTheme(active.themeId))
-        } catch (error) {
-          validationError = error instanceof Error ? error.message : '生成的 Mermaid 暂时无法渲染。'
-        }
-      }
+      const response = result.response
       const stats = getAiLineStats(sourceCode, response.code)
       setCandidate({
         response,
@@ -224,7 +220,8 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
         documentId,
         added: stats.added,
         removed: stats.removed,
-        validationError,
+        validationError: result.validationError,
+        repairAttempts: result.repairAttempts,
       })
     } catch (error) {
       if (controller.signal.aborted) {
@@ -240,6 +237,32 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
     }
   }
 
+  const run = async () => {
+    if (!active || !canSubmit || !selectedModel) return
+    await executeWorkflow({
+      action: DEFAULT_AI_DIAGRAM_ACTION,
+      prompt: prompt.trim(),
+      code: active.code,
+      diagramKind: active.kind,
+      provider: selectedModel.provider,
+      model: selectedModel.model,
+      renderError: renderError?.raw || renderError?.message,
+    }, active.code, active.id)
+  }
+
+  const retryCandidateRepair = async () => {
+    if (!active || !candidate || !candidate.validationError || !selectedModel) return
+    await executeWorkflow({
+      action: 'fix',
+      prompt: '继续修复这个候选图，使其通过 Mermaid 渲染检查；保持原始业务需求和已经完成的修改。',
+      code: candidate.response.code,
+      diagramKind: active.kind,
+      provider: selectedModel.provider,
+      model: selectedModel.model,
+      renderError: candidate.validationError,
+    }, candidate.sourceCode, candidate.documentId)
+  }
+
   if (!active) return null
   const isExplanation = candidate?.response.action === 'explain'
   const canApply = candidate
@@ -247,18 +270,20 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
     && !candidate.validationError
     && candidate.documentId === active.id
     && candidate.response.code !== active.code
+  const hasCurrentDiagram = Boolean(active.code.trim())
+  const contextDescription = hasCurrentDiagram
+    ? `已识别当前 Mermaid 源码（${active.code.length} 字符）${renderError ? '及渲染错误' : ''}，会与需求一起交给 AI 判断和处理。`
+    : '当前页面没有可用源码，AI 会根据你的描述创建新图。'
+  const runningTitle = workflowStage === 'repairing'
+    ? '初次结果未通过，正在自动修复'
+    : workflowStage === 'validating'
+      ? '正在检查 Mermaid 是否可渲染'
+      : streamText
+        ? '正在流式生成'
+        : '正在理解图表结构'
 
   return (
     <div className="ai-assistant">
-      <section className="ai-intro-card">
-        <span className="ai-mark"><Sparkles size={18} /></span>
-        <div>
-          <span className="ai-eyebrow">CPA · DEEPSEEK · CUSTOM</span>
-          <strong>先预览，再决定是否应用</strong>
-          <p>AI 只处理当前图表，不会读取其他项目和本地版本。</p>
-        </div>
-      </section>
-
       {(statusError || !preferences.aiEnabledModels.length || (selectedModel && status && !selectedProviderStatus?.configured)) && (
         <section className={`ai-config-card ${statusError ? 'error' : ''}`}>
           <div>
@@ -273,30 +298,34 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
         </section>
       )}
 
-      <div className="ai-action-grid" role="radiogroup" aria-label="AI 操作">
-        {actions.map((item) => {
-          const Icon = item.icon
+      <section className="ai-template-section" aria-labelledby="ai-template-heading">
+        <header>
+          <span><Sparkles size={15} /><strong id="ai-template-heading">专业任务模板</strong></span>
+          <small>点击加入输入框，可继续补充细节</small>
+        </header>
+        <div className="ai-template-grid">
+        {AI_PROMPT_TEMPLATES.map((item) => {
+          const Icon = templateIcons[item.id]
           return (
             <button
               key={item.id}
-              className={action === item.id ? 'active' : ''}
+              type="button"
+              disabled={running}
               onClick={() => {
-                setAction(item.id)
+                setPrompt((current) => appendAiPrompt(current, item.prompt))
                 setCandidate(null)
                 setRequestError(null)
                 setAppliedBefore(null)
-                setStreamText('')
-                streamBufferRef.current = ''
+                window.requestAnimationFrame(() => promptRef.current?.focus())
               }}
-              role="radio"
-              aria-checked={action === item.id}
             >
               <Icon size={16} />
               <span><strong>{item.label}</strong><small>{item.hint}</small></span>
             </button>
           )
         })}
-      </div>
+        </div>
+      </section>
 
       <section className="ai-prompt-card">
         <div className="ai-chat-model">
@@ -313,17 +342,22 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
             ))}
           </select>
         </div>
+        <div className={`ai-context-strip ${hasCurrentDiagram ? 'ready' : 'empty'}`}>
+          <ShieldCheck size={13} />
+          <span>{contextDescription}</span>
+        </div>
         <label htmlFor="ai-diagram-prompt">
-          <span><SelectedActionIcon size={15} />{selectedAction.label}</span>
+          <span><Sparkles size={15} />描述要完成的工作</span>
           <small>{prompt.length}/4000</small>
         </label>
         <textarea
+          ref={promptRef}
           id="ai-diagram-prompt"
           rows={5}
           maxLength={4000}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
-          placeholder={placeholders[action]}
+          placeholder="例如：保留现有泳道，在付款前增加财务复核；驳回后返回申请人修改。也可以先点击上方模板，再补充具体要求。"
           disabled={running || !selectedModel}
           onKeyDown={(event) => {
             if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
@@ -333,12 +367,12 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
           }}
         />
         <footer>
-          <span><ShieldCheck size={12} />仅发送当前源码与指令</span>
+          <span><ShieldCheck size={12} />AI 会先理解当前图，再决定新建、修改、修复或解释</span>
           {running ? (
             <button className="ai-stop-button" onClick={() => controllerRef.current?.abort('user')}><X size={14} />停止</button>
           ) : (
             <button className="ai-run-button" onClick={() => void run()} disabled={!canSubmit}>
-              <Send size={14} />{action === 'explain' ? '开始分析' : '生成预览'}
+              <Send size={14} />分析并生成预览
             </button>
           )}
         </footer>
@@ -346,7 +380,7 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
 
       {running && (
         <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite">
-          <header><LoaderCircle size={18} className="spin" /><span><strong>{streamText ? '正在流式生成' : '正在理解图表结构'}</strong><small>{streamText ? '内容会边生成边显示，完成后自动检查图表。' : '已发送请求，正在等待模型返回首段内容。'}</small></span></header>
+          <header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选源码和具体错误交给 AI，无需手工检查。' : streamText ? '内容会边生成边显示，完成后自动检查图表。' : '已发送请求，正在等待模型返回首段内容。'}</small></span></header>
           {streamText && <pre>{streamingPreview(streamText)}<i aria-hidden="true" /></pre>}
         </div>
       )}
@@ -360,7 +394,7 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
           <header>
             <span className="ai-result-status">
               {candidate.validationError ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
-              <strong>{isExplanation ? '分析完成' : candidate.validationError ? '需要人工检查' : '已通过渲染检查'}</strong>
+              <strong>{isExplanation ? '分析完成' : candidate.validationError ? '自动修复仍未通过' : candidate.repairAttempts ? '已自动修复并通过检查' : '已通过渲染检查'}</strong>
             </span>
             <small>{candidate.response.provider === selectedModel?.provider ? selectedProviderLabel : providerLabels[candidate.response.provider]} · {candidate.response.model}</small>
           </header>
@@ -379,7 +413,7 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
                 </ul>
               )}
               {candidate.validationError && <p className="ai-validation-error">{candidate.validationError}</p>}
-              <details className="ai-code-preview">
+              <details className="ai-code-preview" open={Boolean(candidate.validationError)}>
                 <summary><FileCode2 size={14} />查看生成的 Mermaid 源码</summary>
                 <pre>{candidate.response.code}</pre>
               </details>
@@ -395,7 +429,10 @@ export function AiAssistant({ renderError, onOpenSettings }: AiAssistantProps) {
             ) : (
               <>
                 <button onClick={() => setCandidate(null)}>忽略</button>
-                {!isExplanation && (
+                {!isExplanation && candidate.validationError && (
+                  <button className="apply" onClick={() => void retryCandidateRepair()}><RefreshCw size={14} />再次自动修复</button>
+                )}
+                {!isExplanation && !candidate.validationError && (
                   <button
                     className="apply"
                     disabled={!canApply}

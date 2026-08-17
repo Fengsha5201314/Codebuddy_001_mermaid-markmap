@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getAiLineStats, parseAiResponse } from '@/lib/ai-contract'
+import { getAiLineStats, isAiAction, parseAiResponse } from '@/lib/ai-contract'
 
 describe('AI contract', () => {
   it('validates a complete AI response', () => {
@@ -16,6 +16,10 @@ describe('AI contract', () => {
 
   it('rejects an incomplete AI response', () => {
     expect(() => parseAiResponse({ action: 'edit' })).toThrow('请求编号缺失')
+  })
+
+  it('accepts the unified context-aware request action', () => {
+    expect(isAiAction('auto')).toBe(true)
   })
 
   it('summarizes a localized line change', () => {

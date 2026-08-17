@@ -1,6 +1,6 @@
 import type { DiagramEngine, DiagramKind } from '@/types'
 
-export const AI_ACTIONS = ['generate', 'edit', 'fix', 'explain'] as const
+export const AI_ACTIONS = ['auto', 'generate', 'edit', 'fix', 'explain'] as const
 export const AI_PROVIDERS = ['cpa', 'deepseek', 'custom'] as const
 
 export type AiAction = (typeof AI_ACTIONS)[number]

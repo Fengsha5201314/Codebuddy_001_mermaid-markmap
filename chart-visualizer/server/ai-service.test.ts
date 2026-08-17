@@ -314,9 +314,76 @@ describe('AI service', () => {
     const userMessage = request.messages.find((message) => message.role === 'user')
     expect(JSON.parse(userMessage?.content ?? '')).toEqual({
       task: '只增加复核节点',
+      currentDiagramAvailable: true,
       detectedDiagramKind: 'flowchart',
       currentMermaid: injectedPayload.code,
     })
+  })
+
+  it('uses one context-aware request and returns the operation selected by the model', async () => {
+    const fetchMock = vi.fn(async () => chatResponse({
+      action: 'edit',
+      summary: '已识别当前图并优化主路径。',
+      code: 'flowchart LR\n  A --> Review --> B',
+      changes: ['增加复核节点'],
+    }))
+
+    const result = await runAiRequest(config, { ...payload, action: 'auto' }, fetchMock as typeof fetch)
+
+    expect(result.action).toBe('edit')
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    const system = request.messages.find((message) => message.role === 'system')?.content ?? ''
+    const user = JSON.parse(request.messages.find((message) => message.role === 'user')?.content ?? '{}')
+    expect(system).toContain('先根据 currentDiagramAvailable')
+    expect(user).toMatchObject({
+      currentDiagramAvailable: true,
+      currentMermaid: payload.code,
+    })
+  })
+
+  it('keeps the current source unchanged when unified intent detection selects explanation', async () => {
+    const fetchMock = vi.fn(async () => chatResponse({
+      action: 'explain',
+      summary: '当前图包含一个从 A 到 B 的主路径。',
+      code: 'model tried to replace this',
+      changes: ['不应保留'],
+    }))
+
+    const result = await runAiRequest(config, {
+      ...payload,
+      action: 'auto',
+      prompt: '请解释和评审当前图，不要修改。',
+    }, fetchMock as typeof fetch)
+
+    expect(result.action).toBe('explain')
+    expect(result.code).toBe(payload.code)
+    expect(result.changes).toEqual([])
+  })
+
+  it('creates a new diagram when the unified request has no current source', async () => {
+    const fetchMock = vi.fn(async () => chatResponse({
+      action: 'edit',
+      summary: '已创建新图。',
+      code: 'flowchart LR\n  Start --> End',
+      changes: ['创建开始和结束节点'],
+    }))
+
+    const result = await runAiRequest(config, {
+      ...payload,
+      action: 'auto',
+      prompt: '创建一张简单流程图。',
+      code: '',
+    }, fetchMock as typeof fetch)
+
+    expect(result.action).toBe('generate')
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    const user = JSON.parse(request.messages.find((message) => message.role === 'user')?.content ?? '{}')
+    expect(user.currentDiagramAvailable).toBe(false)
+    expect(user.currentMermaid).toBeUndefined()
   })
 
   it('rejects oversized upstream responses before parsing them', async () => {

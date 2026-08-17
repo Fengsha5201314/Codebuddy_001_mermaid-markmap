@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, Download, FileImage, FileType2, LoaderCircle, Network } from 'lucide-react'
 import type { DrawioExportFormat, DrawioExportResult } from '@/lib/drawio-bridge'
+import { makePortableDrawioSvg } from '@/lib/portable-drawio-svg'
 import { Modal } from './Modal'
 
 type VisualDeliveryFormat = 'xml' | 'svg' | 'png' | 'pdf'
@@ -68,12 +69,13 @@ export function VisualExportDialog({ open, onClose, title, fallbackXml, onExport
         png: 'image/png',
         pdf: 'application/pdf',
       }
-      const raw = format === 'xml'
+      let raw = format === 'xml'
         ? result.xml ?? (typeof result.data === 'string' ? result.data : fallbackXml)
         : typeof result.data === 'string'
           ? result.data
           : result.xml
       if (!raw) throw new Error('画布没有返回可下载内容，请稍后重试。')
+      if (format === 'svg') raw = makePortableDrawioSvg(raw)
       triggerDownload(raw, `${safeName(title)}.${extensions[format]}`, mimes[format])
       onClose()
     } catch (downloadError) {
