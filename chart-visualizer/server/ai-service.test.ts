@@ -296,6 +296,34 @@ describe('AI service', () => {
     expect(request.stream).toBe(true)
   })
 
+  it('accepts a modest draw.io result when an OpenAI-compatible provider streams cumulative snapshots', async () => {
+    const xml = `<mxfile><diagram><mxGraphModel><root><mxCell id="0" /><mxCell id="1" parent="0" /><mxCell id="large" parent="1" value="${'SAP MM '.repeat(6_000)}" vertex="1" /></root></mxGraphModel></diagram></mxfile>`
+    const content = JSON.stringify({
+      action: 'edit',
+      summary: '已生成 SAP MM 全流程架构图。',
+      code: xml,
+      changes: ['串联物料、采购、收货、发票和付款'],
+    })
+    const snapshots = Array.from({ length: 90 }, (_, index) => content.slice(0, Math.ceil(content.length * (index + 1) / 90)))
+    const sse = `${snapshots.map((snapshot) => `data: ${JSON.stringify({ choices: [{ delta: { content: snapshot } }] })}\n\n`).join('')}data: [DONE]\n\n`
+    const fetchMock = vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+    }))
+    const deltas: string[] = []
+
+    const result = await runAiRequestStream(config, {
+      ...payload,
+      action: 'auto',
+      phase: 'generate',
+      diagramEngine: 'drawio',
+      code: '<mxfile><diagram><mxGraphModel><root><mxCell id="0" /></root></mxGraphModel></diagram></mxfile>',
+    }, (delta) => deltas.push(delta), fetchMock as typeof fetch)
+
+    expect(result.code).toBe(xml)
+    expect(deltas.join('')).toBe(content)
+  })
+
   it('keeps an active stream alive when output continues beyond the initial timeout window', async () => {
     vi.useFakeTimers()
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((delay) => {

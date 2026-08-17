@@ -5,7 +5,8 @@ import { dirname } from 'node:path'
 
 const AI_ACTIONS = ['auto', 'generate', 'edit', 'fix', 'explain'] as const
 const AI_PROVIDERS = ['cpa', 'deepseek', 'custom'] as const
-const MAX_UPSTREAM_RESPONSE_BYTES = 1_500_000
+const MAX_UPSTREAM_CONTENT_BYTES = 1_500_000
+const MAX_UPSTREAM_STREAM_BYTES = 24 * 1024 * 1024
 const MAX_AI_REQUEST_BYTES = 12 * 1024 * 1024
 const MAX_ATTACHMENT_TEXT = 120_000
 const MAX_ATTACHMENT_IMAGE_BYTES = 5 * 1024 * 1024
@@ -546,11 +547,11 @@ function validateModelResult(value: unknown, payload: AiPayload): ValidatedAiMod
 
 async function upstreamJson(response: Response): Promise<unknown> {
   const declaredSize = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_UPSTREAM_RESPONSE_BYTES) {
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_UPSTREAM_CONTENT_BYTES) {
     throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
   }
   const text = await response.text()
-  if (Buffer.byteLength(text, 'utf8') > MAX_UPSTREAM_RESPONSE_BYTES) {
+  if (Buffer.byteLength(text, 'utf8') > MAX_UPSTREAM_CONTENT_BYTES) {
     throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
   }
   try {
@@ -773,11 +774,19 @@ export async function runAiRequestStream(
       if (typeof chunk.error?.message === 'string') throw upstreamError(provider.label, chunk)
       const delta = chunk.choices?.[0]?.delta?.content
       if (typeof delta !== 'string' || !delta) return
-      content += delta
-      if (Buffer.byteLength(content, 'utf8') > MAX_UPSTREAM_RESPONSE_BYTES) {
+      let appended = delta
+      if (delta.startsWith(content)) {
+        appended = delta.slice(content.length)
+        content = delta
+      } else if (content.startsWith(delta) || content.endsWith(delta)) {
+        appended = ''
+      } else {
+        content += delta
+      }
+      if (Buffer.byteLength(content, 'utf8') > MAX_UPSTREAM_CONTENT_BYTES) {
         throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
       }
-      await onDelta(delta)
+      if (appended) await onDelta(appended)
     }
 
     while (true) {
@@ -785,7 +794,7 @@ export async function runAiRequestStream(
       if (done) break
       streamTimeout.refresh()
       receivedBytes += value.byteLength
-      if (receivedBytes > MAX_UPSTREAM_RESPONSE_BYTES) {
+      if (receivedBytes > MAX_UPSTREAM_STREAM_BYTES) {
         await reader.cancel()
         throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
       }

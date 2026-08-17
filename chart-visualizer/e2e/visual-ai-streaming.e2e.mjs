@@ -43,7 +43,7 @@ try {
         changes: [],
       })
       const splitAt = content.indexOf('AI 基础概念') + 'AI 基础概念'.length
-      const chunks = [content.slice(0, splitAt), content.slice(splitAt)]
+      const chunks = [content.slice(0, splitAt), content]
       response.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
@@ -53,7 +53,7 @@ try {
       setTimeout(() => {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[1] } }] })}\n\n`)
         response.end('data: [DONE]\n\n')
-      }, 1_200)
+      }, 3_000)
     })
   })
   const providerAddress = await listen(providerServer)
@@ -103,7 +103,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#visual-ai-prompt')?.value === '')
 
   const liveOutput = page.locator('.ai-running-card pre')
-  await liveOutput.waitFor({ state: 'visible', timeout: 5_000 })
+  await liveOutput.waitFor({ state: 'visible', timeout: 8_000 })
   const streamedText = await liveOutput.textContent()
   if (!streamedText?.includes('stream-visible') || !streamedText.includes('AI 基础概念')) {
     throw new Error(`Live XML text was not visible: ${streamedText}`)
