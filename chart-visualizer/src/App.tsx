@@ -16,6 +16,7 @@ import { VisualExportDialog } from '@/components/VisualExportDialog'
 import { VisualInspector } from '@/components/VisualInspector'
 import { downloadWorkspace, parseImportFile } from '@/lib/file-io'
 import { getResponsiveWorkspaceLayout, getWorkspaceGridTemplate } from '@/lib/workspace-layout'
+import { closeDesktopWindow, confirmDesktopClose, onDesktopCloseRequested } from '@/lib/desktop-runtime'
 import { useWorkspaceStore } from '@/store/workspace-store'
 import type { RenderError, RenderResult } from '@/types'
 
@@ -109,6 +110,31 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const viewportWidth = useViewportWidth()
   const layout = getResponsiveWorkspaceLayout(viewportWidth, preferences.workspaceView)
+
+  useEffect(() => onDesktopCloseRequested(() => {
+    void (async () => {
+      const currentState = useWorkspaceStore.getState()
+      const current = currentState.documents.find((document) => document.id === currentState.activeDocumentId)
+      if (current?.engine !== 'drawio') {
+        closeDesktopWindow()
+        return
+      }
+      let latestXml = current.drawioXml ?? ''
+      try {
+        latestXml = await visualCanvasRef.current?.captureXml() ?? latestXml
+      } catch {
+        // Autosave remains the fallback when the embedded editor cannot answer during shutdown.
+      }
+      const hasUnsavedChanges = Boolean(latestXml && latestXml !== current.drawioXml)
+      const decision = await confirmDesktopClose(hasUnsavedChanges)
+      if (decision === 'cancel') return
+      if (decision === 'save' && hasUnsavedChanges) {
+        useWorkspaceStore.getState().updateVisualSource(latestXml)
+        await new Promise((resolve) => window.setTimeout(resolve, 40))
+      }
+      closeDesktopWindow()
+    })()
+  }), [])
 
   const handleResult = useCallback((result: RenderResult | null) => setRenderResult(result), [])
   const handleRenderError = useCallback((error: RenderError | null) => setRenderError(error), [])
@@ -235,12 +261,19 @@ function App() {
           onResearch={() => setRoadmapOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onConvertToVisual={() => {
-            const created = convertActiveToVisual()
-            if (created) showNotice('已创建可视化副本，原 Mermaid 图保持不变')
+            const existing = documents.find((document) => document.engine === 'drawio' && document.sourceDocumentId === active?.id)
+            const sourceChanged = Boolean(existing && active?.engine === 'mermaid' && existing.sourceMermaid !== active.code)
+            const refresh = sourceChanged && window.confirm('Mermaid 源码已在上次同步后发生修改。\n\n是否用最新源码重新生成可视化画布？这会覆盖可视化画布中的自由排版。\n\n选择“取消”将保留现有可视化排版并直接进入。')
+            const created = convertActiveToVisual(undefined, refresh)
+            if (created) showNotice(
+              refresh
+                ? '已用最新 Mermaid 源码刷新可视化画布'
+                : existing ? '已进入该图表的可视化画布' : '已为当前图表建立可视化画布，可随时切换回来',
+            )
           }}
           onReturnToSource={sourceDocument ? () => {
             setActiveDocument(sourceDocument.id)
-            showNotice('已返回 Mermaid 原图，可视化画布仍在后台保持')
+            showNotice('已切换到源码画布，可视化排版已自动保存')
           } : undefined}
         />
 
@@ -393,9 +426,9 @@ function App() {
       <Modal open={convertInfoOpen} onClose={() => setConvertInfoOpen(false)} title="两种编辑方式如何配合" description="让快速生成和精细排版各自做最擅长的事。" size="medium">
         <div className="conversion-guide">
           <article><span>1</span><div><strong>Mermaid 负责快速生成</strong><p>适合 AI 生成、源码维护、批量修改和结构稳定的流程图。</p></div></article>
-          <article><span>2</span><div><strong>转换时创建可视化副本</strong><p>原 Mermaid 图不会改变，副本进入自由拖拽、排版和样式编辑。</p></div></article>
-          <article><span>3</span><div><strong>画布独立保存为 draw.io XML</strong><p>因为自由移动后的图形无法可靠还原成所有 Mermaid 语法，所以不做误导性的强制双向覆盖。</p></div></article>
-          <div><ShieldCheck size={17} /><p>两份文档都保存在本机；转换、排版或导出不会删除原始图表。</p></div>
+          <article><span>2</span><div><strong>同一项目增加可视化模式</strong><p>项目列表只显示一项；源码画布和可视化画布可以随时切换，重复进入不会再创建文件。</p></div></article>
+          <article><span>3</span><div><strong>自由排版安全保存在 draw.io XML</strong><p>源码变化时由你确认是否刷新画布；AI 生成的 Mermaid 结构会同步回源码，但纯手工坐标不会被错误翻译。</p></div></article>
+          <div><ShieldCheck size={17} /><p>两种格式都归属于同一项目并保存在本机，切换、排版或导出不会丢失已有内容。</p></div>
         </div>
       </Modal>
 

@@ -15,6 +15,7 @@ import type { DiagramDocument } from '@/types'
 import { VisualCanvasShell } from './VisualCanvasShell'
 
 export interface VisualCanvasHandle {
+  captureXml: () => Promise<string>
   exportDiagram: (format: DrawioExportFormat, options?: DrawioExportOptions) => Promise<DrawioExportResult>
   fit: () => void
   loadXml: (xml: string) => void
@@ -41,6 +42,11 @@ function getInitialSource(document: DiagramDocument): DrawioSource {
   return { type: 'xml', xml: xml || EMPTY_DRAWIO_XML }
 }
 
+export function needsInitialVisualXmlCapture(document: DiagramDocument): boolean {
+  const xml = document.drawioXml?.trim()
+  return Boolean(document.sourceMermaid?.trim() && (!xml || xml === EMPTY_DRAWIO_XML))
+}
+
 export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(function VisualCanvas(
   { document, onConvertInfo, onNotice },
   ref,
@@ -51,7 +57,9 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
   const saveTimerRef = useRef<number | null>(null)
   const connectionTimerRef = useRef<number | null>(null)
   const connectionStartedRef = useRef(0)
-  const pendingMermaidRef = useRef<string | null>(null)
+  const pendingMermaidRef = useRef<string | null>(
+    needsInitialVisualXmlCapture(document) ? document.sourceMermaid?.trim() ?? null : null,
+  )
   const preferredRuntimeMode = useWorkspaceStore((state) => state.preferences.visualEditorMode)
   const allowOnlineFallback = useWorkspaceStore((state) => state.preferences.visualEditorOnlineFallback)
   const [runtimeMode, setRuntimeMode] = useState(preferredRuntimeMode)
@@ -63,6 +71,12 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
   const [attempt, setAttempt] = useState(0)
 
   useImperativeHandle(ref, () => ({
+    captureXml: async () => {
+      const bridge = bridgeRef.current
+      if (!bridge || bridge.state !== 'ready') return lastLocalXmlRef.current
+      const result = await bridge.exportDiagram('xml')
+      return result.xml || (typeof result.data === 'string' ? result.data : '') || lastLocalXmlRef.current
+    },
     exportDiagram: (format, options) => {
       const bridge = bridgeRef.current
       if (!bridge) return Promise.reject(new Error('可视化画布尚未连接。'))
@@ -154,7 +168,7 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
             pendingMermaidRef.current = null
             lastLocalXmlRef.current = xml
             useWorkspaceStore.getState().updateVisualSource(xml, pendingMermaid)
-            onNotice('AI 新画布已应用并自动保存')
+            onNotice(document.drawioXml === EMPTY_DRAWIO_XML ? '可视化画布已建立并自动同步' : 'AI 新画布已应用并自动保存')
           }).catch(() => onNotice('画布已生成，下次修改时将自动保存'))
         }
       },
@@ -200,11 +214,25 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
 
   useEffect(() => {
     const xml = document.drawioXml?.trim()
-    if (!xml || !ready || xml === lastLocalXmlRef.current) return
+    if (!ready) return
+    if (needsInitialVisualXmlCapture(document) && document.sourceMermaid) {
+      if (pendingMermaidRef.current === document.sourceMermaid) return
+      pendingMermaidRef.current = document.sourceMermaid
+      lastLocalXmlRef.current = EMPTY_DRAWIO_XML
+      setStatus('正在用最新 Mermaid 源码同步可视化画布')
+      bridgeRef.current?.load({
+        type: 'mermaid',
+        mermaid: toDrawioCompatibleMermaid(document.sourceMermaid).source,
+        wrap: true,
+        sourceMetadataKey: 'mermaidSource',
+      })
+      return
+    }
+    if (!xml || xml === lastLocalXmlRef.current) return
     lastLocalXmlRef.current = xml
     bridgeRef.current?.load({ type: 'xml', xml })
     onNotice('已恢复画布版本')
-  }, [document.drawioXml, onNotice, ready])
+  }, [document.drawioXml, document.sourceMermaid, onNotice, ready])
 
   const run = (action: () => void) => {
     try {
@@ -231,7 +259,7 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
       runtimeLabel={runtime.label}
       loadingTitle={runtime.loadingTitle}
       loadingDescription={runtime.loadingDescription}
-      title={document.sourceMermaid ? 'Mermaid 可视化副本' : '专业画布'}
+      title={document.sourceDocumentId ? '可视化画布' : '独立可视化画布'}
       onUndo={() => run(() => bridgeRef.current?.invokeAction('undo'))}
       onRedo={() => run(() => bridgeRef.current?.invokeAction('redo'))}
       onFit={() => run(() => bridgeRef.current?.invokeAction('fit', { border: 22, maxScale: 1 }))}

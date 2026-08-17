@@ -119,8 +119,8 @@ export function Topbar({
       ) : (
         <div className="visual-mode-switch">
           {onReturnToSource && (
-            <button type="button" className="visual-return-source" onClick={onReturnToSource} aria-label="返回 Mermaid 原图" title="返回转换前的 Mermaid 原图">
-              <ArrowLeft size={15} /><span>返回 Mermaid 原图</span>
+            <button type="button" className="visual-return-source" onClick={onReturnToSource} aria-label="切换到源码画布" title="切换到同一图表的 Mermaid 源码画布">
+              <ArrowLeft size={15} /><span>源码画布</span>
             </button>
           )}
           <div className="visual-mode-chip" aria-label="当前为可视化画布模式">
@@ -136,11 +136,11 @@ export function Topbar({
           <button
             className="toolbar-button visual-convert-action"
             onClick={onConvertToVisual}
-            title="保留当前 Mermaid 图，并创建一个可自由拖拽排版的副本"
-            aria-label="转为可视化画布，保留原图并创建副本"
+            title="进入当前图表的可视化画布；再次进入会复用同一画布"
+            aria-label="进入可视化画布"
           >
             <Workflow size={17} />
-            <span>转为可视化</span>
+            <span>可视化画布</span>
           </button>
         )}
         <button

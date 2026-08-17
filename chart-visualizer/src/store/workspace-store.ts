@@ -40,7 +40,7 @@ interface WorkspaceState {
   preferences: WorkspacePreferences
   createDocument: (templateId?: string) => string
   createVisualDocument: (title?: string, drawioXml?: string, sourceMermaid?: string) => string
-  convertActiveToVisual: (drawioXml?: string) => string | undefined
+  convertActiveToVisual: (drawioXml?: string, refreshFromSource?: boolean) => string | undefined
   importDiagram: (title: string, code: string) => string
   importWorkspace: (documents: DiagramDocument[]) => void
   setActiveDocument: (id: string) => void
@@ -103,17 +103,37 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         return document.id
       },
 
-      convertActiveToVisual: (drawioXml = EMPTY_DRAWIO_XML) => {
+      convertActiveToVisual: (drawioXml = EMPTY_DRAWIO_XML, refreshFromSource = false) => {
         const source = get().documents.find((document) => document.id === get().activeDocumentId)
         if (!source || source.engine !== 'mermaid') return undefined
+        const existing = get().documents.find(
+          (document) => document.engine === 'drawio' && document.sourceDocumentId === source.id,
+        )
+        if (existing) {
+          set((state) => ({
+            documents: refreshFromSource
+              ? state.documents.map((document) => document.id === existing.id ? {
+                ...document,
+                title: source.title,
+                code: source.code,
+                drawioXml: drawioXml.trim() || EMPTY_DRAWIO_XML,
+                sourceMermaid: source.code,
+                kind: detectDiagramKind(source.code),
+                updatedAt: now(),
+              } : document)
+              : state.documents.map((document) => document.id === existing.id
+                ? { ...document, title: source.title }
+                : document),
+            activeDocumentId: existing.id,
+          }))
+          return existing.id
+        }
         const timestamp = now()
         const document: DiagramDocument = {
           ...source,
           id: id('diagram'),
-          title: `${source.title} - 可视化`,
-          description: source.description
-            ? `${source.description}（可视化副本）`
-            : '由 Mermaid 转换的可视化副本',
+          title: source.title,
+          description: source.description || '包含 Mermaid 源码与可视化画布的双模式图表',
           engine: 'drawio',
           code: source.code,
           drawioXml: drawioXml.trim() || EMPTY_DRAWIO_XML,
@@ -159,10 +179,24 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
       updateActiveDocument: (patch) => {
         const activeId = get().activeDocumentId
+        const active = get().documents.find((document) => document.id === activeId)
+        const linkedIds = new Set<string>([activeId])
+        if (patch.title !== undefined && active) {
+          if (active.engine === 'drawio' && active.sourceDocumentId) linkedIds.add(active.sourceDocumentId)
+          if (active.engine === 'mermaid') {
+            get().documents
+              .filter((document) => document.sourceDocumentId === active.id)
+              .forEach((document) => linkedIds.add(document.id))
+          }
+        }
         set((state) => ({
-          documents: state.documents.map((document) =>
-            document.id === activeId ? { ...document, ...patch, updatedAt: now() } : document,
-          ),
+          documents: state.documents.map((document) => {
+            if (document.id === activeId) return { ...document, ...patch, updatedAt: now() }
+            if (patch.title !== undefined && linkedIds.has(document.id)) {
+              return { ...document, title: patch.title, updatedAt: now() }
+            }
+            return document
+          }),
         }))
       },
 
@@ -175,11 +209,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       updateVisualSource: (drawioXml, sourceMermaid) => {
         if (!drawioXml.trim()) return
         const activeId = get().activeDocumentId
+        const active = get().documents.find((document) => document.id === activeId && document.engine === 'drawio')
+        const timestamp = now()
         set((state) => ({
           documents: state.documents.map((document) => {
+            if (sourceMermaid !== undefined && active?.sourceDocumentId === document.id && document.engine === 'mermaid') {
+              return { ...document, code: sourceMermaid, kind: detectDiagramKind(sourceMermaid), updatedAt: timestamp }
+            }
             if (document.id !== activeId || document.engine !== 'drawio') return document
             if (sourceMermaid === undefined) {
-              return { ...document, drawioXml, updatedAt: now() }
+              return { ...document, drawioXml, updatedAt: timestamp }
             }
             return {
               ...document,
@@ -187,7 +226,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               drawioXml,
               sourceMermaid,
               kind: detectDiagramKind(sourceMermaid),
-              updatedAt: now(),
+              updatedAt: timestamp,
             }
           }),
         }))
@@ -222,11 +261,17 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
       deleteDocument: (documentId) => {
         const state = get()
-        if (state.documents.length <= 1) return
-        const remaining = state.documents.filter((document) => document.id !== documentId)
+        const relatedIds = new Set([
+          documentId,
+          ...state.documents
+            .filter((document) => document.sourceDocumentId === documentId)
+            .map((document) => document.id),
+        ])
+        const remaining = state.documents.filter((document) => !relatedIds.has(document.id))
+        if (!remaining.length) return
         set({
           documents: remaining,
-          activeDocumentId: state.activeDocumentId === documentId ? remaining[0].id : state.activeDocumentId,
+          activeDocumentId: relatedIds.has(state.activeDocumentId) ? remaining[0].id : state.activeDocumentId,
         })
       },
 

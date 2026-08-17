@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { createAiMiddleware } from '../server/ai-service.ts'
 import packageInfo from '../package.json' with { type: 'json' }
@@ -31,6 +31,9 @@ interface UpdateState {
 
 let mainWindow: BrowserWindow | null = null
 let mainWindowCreation: Promise<BrowserWindow> | null = null
+let allowWindowClose = false
+let closeRequestPending = false
+let appQuitting = false
 let localServer: Server | null = null
 let localOrigin = ''
 const currentVersion = () => app.isPackaged ? app.getVersion() : packageInfo.version
@@ -134,6 +137,28 @@ function registerIpc() {
     if (updateState.status !== 'downloaded') return false
     autoUpdater.quitAndInstall(false, true)
     return true
+  })
+  ipcMain.handle('app:confirm-close', async (_event, hasUnsavedChanges: boolean) => {
+    if (!hasUnsavedChanges || !mainWindow || mainWindow.isDestroyed()) return 'save'
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: '关闭风沙图表工作台',
+      message: '检测到可视化画布还有尚未写入本机的变更。',
+      detail: '请选择保存并关闭、不保存直接关闭，或取消后继续编辑。',
+      buttons: ['保存并关闭', '不保存，直接关闭', '取消'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    })
+    const decision = result.response === 0 ? 'save' : result.response === 1 ? 'discard' : 'cancel'
+    if (decision === 'cancel') closeRequestPending = false
+    return decision
+  })
+  ipcMain.on('app:close-now', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    allowWindowClose = true
+    closeRequestPending = false
+    mainWindow.close()
   })
 }
 
@@ -300,8 +325,17 @@ async function createMainWindow() {
     if (!isSameOriginNavigation(url, rendererUrl)) event.preventDefault()
   })
   window.once('ready-to-show', () => window.show())
+  window.on('close', (event) => {
+    if (allowWindowClose || appQuitting || window.webContents.isDestroyed()) return
+    event.preventDefault()
+    if (closeRequestPending) return
+    closeRequestPending = true
+    window.webContents.send('app:close-requested')
+  })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
+    allowWindowClose = false
+    closeRequestPending = false
   })
   await window.loadURL(rendererUrl)
   return window
@@ -345,6 +379,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 app.on('before-quit', () => {
+  appQuitting = true
   localServer?.closeIdleConnections()
   localServer?.closeAllConnections()
   localServer?.close()

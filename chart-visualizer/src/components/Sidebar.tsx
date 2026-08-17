@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronsLeft,
   ChevronsRight,
@@ -35,12 +35,33 @@ interface SidebarProps {
 }
 
 function DocumentItem({ document }: { document: DiagramDocument }) {
+  const documents = useWorkspaceStore((state) => state.documents)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const setActive = useWorkspaceStore((state) => state.setActiveDocument)
   const duplicate = useWorkspaceStore((state) => state.duplicateDocument)
   const remove = useWorkspaceStore((state) => state.deleteDocument)
   const favorite = useWorkspaceStore((state) => state.toggleFavorite)
   const [menuOpen, setMenuOpen] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const activeDocument = documents.find((item) => item.id === activeId)
+  const visualMode = documents.some((item) => item.engine === 'drawio' && item.sourceDocumentId === document.id)
+  const isActive = activeId === document.id || activeDocument?.sourceDocumentId === document.id
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!rowRef.current?.contains(event.target as Node)) setMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
+    globalThis.document.addEventListener('pointerdown', closeOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      globalThis.document.removeEventListener('pointerdown', closeOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [menuOpen])
 
   const handleDelete = () => {
     if (window.confirm(`确认删除“${document.title}”吗？其他图表不会受影响。`)) remove(document.id)
@@ -48,7 +69,7 @@ function DocumentItem({ document }: { document: DiagramDocument }) {
   }
 
   return (
-    <div className={`document-row ${activeId === document.id ? 'active' : ''}`}>
+    <div ref={rowRef} className={`document-row ${isActive ? 'active' : ''}`}>
       <button className="document-main" onClick={() => setActive(document.id)}>
         <span
           className={`kind-mark ${document.engine === 'drawio' ? 'kind-visual' : `kind-${document.kind}`}`}
@@ -58,7 +79,7 @@ function DocumentItem({ document }: { document: DiagramDocument }) {
         </span>
         <span className="document-copy">
           <strong>{document.title}</strong>
-          <small>{new Date(document.updatedAt).toLocaleDateString('zh-CN')}</small>
+          <small>{new Date(document.updatedAt).toLocaleDateString('zh-CN')}{visualMode ? ' · 双画布' : ''}</small>
         </span>
       </button>
       <button className="document-more" onClick={() => setMenuOpen((value) => !value)} aria-label="更多操作">
@@ -92,6 +113,7 @@ export function Sidebar({ onNew }: SidebarProps) {
   const visibleDocuments = useMemo(() => {
     const search = query.trim().toLowerCase()
     return [...documents]
+      .filter((document) => !document.sourceDocumentId)
       .filter((document) => !search || [document.title, document.description, ...document.tags].join(' ').toLowerCase().includes(search))
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.updatedAt.localeCompare(a.updatedAt))
   }, [documents, query])
@@ -134,7 +156,7 @@ export function Sidebar({ onNew }: SidebarProps) {
 
       <div className="section-label">
         <span>本地项目</span>
-        <em>{documents.length}</em>
+        <em>{documents.filter((document) => !document.sourceDocumentId).length}</em>
       </div>
 
       <div className="document-list">

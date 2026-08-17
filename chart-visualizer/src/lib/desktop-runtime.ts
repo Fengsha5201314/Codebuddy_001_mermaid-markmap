@@ -24,6 +24,9 @@ interface FengshaDesktopBridge {
   getUpdateState: () => Promise<UpdateState>
   checkForUpdates: () => Promise<UpdateState>
   installUpdate: () => Promise<boolean>
+  confirmClose: (hasUnsavedChanges: boolean) => Promise<'save' | 'discard' | 'cancel'>
+  closeNow: () => void
+  onCloseRequested: (callback: () => void) => () => void
   onUpdateState: (callback: (state: UpdateState) => void) => () => void
 }
 
@@ -68,4 +71,16 @@ export async function installUpdate(): Promise<boolean> {
 
 export function onUpdateState(callback: (state: UpdateState) => void): () => void {
   return window.fengshaDesktop?.onUpdateState(callback) ?? (() => undefined)
+}
+
+export function onDesktopCloseRequested(callback: () => void): () => void {
+  return window.fengshaDesktop?.onCloseRequested(callback) ?? (() => undefined)
+}
+
+export async function confirmDesktopClose(hasUnsavedChanges: boolean): Promise<'save' | 'discard' | 'cancel'> {
+  return window.fengshaDesktop?.confirmClose(hasUnsavedChanges) ?? 'save'
+}
+
+export function closeDesktopWindow(): void {
+  window.fengshaDesktop?.closeNow()
 }

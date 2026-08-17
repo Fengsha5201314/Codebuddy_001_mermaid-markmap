@@ -89,7 +89,7 @@ export function TemplateGallery({ open, onClose, onSelect, onCreateVisual }: Tem
               </button>
             )
           })}
-          <div className="visual-preset-note"><Workflow size={17} /><span><strong>已有 Mermaid 图？</strong> 可在图表右上角“更多”中转为可视化副本，原图不会改变。</span></div>
+          <div className="visual-preset-note"><Workflow size={17} /><span><strong>已有 Mermaid 图？</strong> 可从顶部进入同一图表的可视化画布，并随时切回源码画布。</span></div>
         </div>
       )}
     </Modal>

@@ -56,7 +56,7 @@ try {
   check(await page.getByRole('radio', { name: /\u672c\u5730\u5185\u7f6e/ }).getAttribute('aria-checked') === 'true', '\u65b0\u5b89\u88c5\u5e94\u9ed8\u8ba4\u4f7f\u7528\u672c\u5730\u5f15\u64ce')
   await page.getByRole('button', { name: '\u5173\u95ed' }).click()
 
-  await page.getByRole('button', { name: /\u8f6c\u4e3a\u53ef\u89c6\u5316/ }).click()
+  await page.getByRole('button', { name: /\u8fdb\u5165\u53ef\u89c6\u5316\u753b\u5e03/ }).click()
   const connectingCopy = page.getByText(/\u672c\u5730\u53ef\u89c6\u5316\u5f15\u64ce|\u5df2\u5185\u7f6e draw\.io/)
   check(await connectingCopy.count() > 0, '\u8fde\u63a5\u72b6\u6001\u5e94\u660e\u786e\u8bf4\u660e\u6b63\u5728\u542f\u52a8\u672c\u5730\u5f15\u64ce')
 
@@ -150,26 +150,35 @@ try {
   if (await page.getByText('\u5bfc\u51fa\u53ef\u89c6\u5316\u753b\u5e03').count()) await page.getByRole('button', { name: '\u5173\u95ed' }).click()
   const aiButton = page.getByRole('button', { name: /AI \u52a9\u624b/ })
   check(await aiButton.isEnabled(), '\u53ef\u89c6\u5316\u753b\u5e03\u6a21\u5f0f\u5fc5\u987b\u80fd\u6253\u5f00 AI \u52a9\u624b')
-  check(await page.getByRole('button', { name: /\u8fd4\u56de Mermaid \u539f\u56fe/ }).count() === 1, '\u753b\u5e03\u5fc5\u987b\u63d0\u4f9b\u660e\u786e\u7684\u201c\u8fd4\u56de Mermaid \u539f\u56fe\u201d\u5165\u53e3')
+  check(await page.getByRole('button', { name: /\u5207\u6362\u5230\u6e90\u7801\u753b\u5e03/ }).count() === 1, '\u753b\u5e03\u5fc5\u987b\u63d0\u4f9b\u660e\u786e\u7684\u201c\u6e90\u7801\u753b\u5e03\u201d\u5207\u6362\u5165\u53e3')
   await aiButton.click()
   await page.locator('.visual-ai-assistant').waitFor({ state: 'visible' })
+  await page.getByText(/\u5df2\u8bc6\u522b\u5f53\u524d\u53ef\u89c6\u5316\u753b\u5e03/).waitFor({ state: 'visible', timeout: 8_000 })
   check(await page.getByRole('button', { name: /\u4f18\u5316\u7ed3\u6784/ }).count() === 1, '\u753b\u5e03 AI \u5e94\u63d0\u4f9b\u7ed3\u6784\u4f18\u5316\u63d0\u793a\u8bcd\u6a21\u677f')
   check(await page.getByRole('button', { name: /\u4ece\u63cf\u8ff0\u521b\u5efa/ }).count() === 1, '\u753b\u5e03 AI \u5e94\u63d0\u4f9b\u4ece\u63cf\u8ff0\u521b\u5efa\u7684\u63d0\u793a\u8bcd\u6a21\u677f')
   await page.getByRole('button', { name: /\u4f18\u5316\u7ed3\u6784/ }).click()
   check((await page.getByLabel(/\u63cf\u8ff0\u8981\u5b8c\u6210\u7684\u5de5\u4f5c/).inputValue()).includes('\u4e1a\u52a1\u76ee\u6807'), '\u70b9\u51fb\u4e13\u4e1a\u6a21\u677f\u5e94\u628a\u63d0\u793a\u8bcd\u52a0\u5165\u8f93\u5165\u6846')
   await page.getByRole('button', { name: '\u5173\u95ed\u753b\u5e03 AI' }).click()
 
-  await page.getByRole('button', { name: /\u8fd4\u56de Mermaid \u539f\u56fe/ }).click()
+  await page.getByRole('button', { name: /\u5207\u6362\u5230\u6e90\u7801\u753b\u5e03/ }).click()
   await page.locator('.editor-preview-workspace').waitFor({ state: 'visible' })
 
   const returnStarted = Date.now()
-  await page.locator('.document-main').filter({ hasText: '\u8ba2\u5355\u5c65\u7ea6\u6cf3\u9053\u56fe - \u53ef\u89c6\u5316' }).click()
+  check(await page.locator('.document-row').count() === 1, '\u540c\u4e00\u56fe\u8868\u7684 Mermaid \u4e0e\u53ef\u89c6\u5316\u6a21\u5f0f\u5e94\u53ea\u663e\u793a\u4e00\u4e2a\u9879\u76ee')
+  check((await page.locator('.document-row').textContent()).includes('\u53cc\u753b\u5e03'), '\u5df2\u5efa\u7acb\u53ef\u89c6\u5316\u6a21\u5f0f\u7684\u9879\u76ee\u5e94\u663e\u793a\u53cc\u753b\u5e03\u6807\u8bc6')
+  await page.getByRole('button', { name: /\u8fdb\u5165\u53ef\u89c6\u5316\u753b\u5e03/ }).click()
   await page.locator('.visual-canvas-frame.is-visible').waitFor({ state: 'visible', timeout: 30_000 })
   const returnDurationMs = Date.now() - returnStarted
+  check(await page.locator('.document-row').count() === 1, '\u91cd\u590d\u8fdb\u5165\u53ef\u89c6\u5316\u753b\u5e03\u4e0d\u5f97\u521b\u5efa\u91cd\u590d\u9879\u76ee')
 
   check(localEditorDocumentRequests === 1, `\u8fd4\u56de\u5df2\u6253\u5f00\u7684\u753b\u5e03\u4e0d\u5e94\u91cd\u65b0\u542f\u52a8\u672c\u5730\u5f15\u64ce\uff0c\u5b9e\u9645\u8bf7\u6c42 ${localEditorDocumentRequests} \u6b21`)
   check(onlineEditorDocumentRequests === 0, `\u65ad\u7f51\u672c\u5730\u6a21\u5f0f\u4e0d\u5e94\u8bf7\u6c42 embed.diagrams.net\uff0c\u5b9e\u9645\u8bf7\u6c42 ${onlineEditorDocumentRequests} \u6b21`)
   check(returnDurationMs < 3_000, `\u8fd4\u56de\u5df2\u6253\u5f00\u7684\u753b\u5e03\u5e94\u5728 3 \u79d2\u5185\u5b8c\u6210\uff0c\u5b9e\u9645 ${returnDurationMs}ms`)
+
+  await page.getByRole('button', { name: /\u5207\u6362\u5230\u6e90\u7801\u753b\u5e03/ }).click()
+  const closeEvent = page.waitForEvent('close', { timeout: 8_000 }).then(() => true).catch(() => false)
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close())
+  check(await closeEvent, '\u70b9\u51fb\u684c\u9762\u7a97\u53e3\u5173\u95ed\u6309\u94ae\u540e\uff0c\u65e0\u672a\u4fdd\u5b58\u53d8\u66f4\u65f6\u5e94\u6b63\u5e38\u9000\u51fa')
 
   if (failures.length) {
     throw new Error(`\u53ef\u89c6\u5316\u753b\u5e03\u56de\u5f52\u6d4b\u8bd5\u5931\u8d25\uff1a\n- ${failures.join('\n- ')}`)
