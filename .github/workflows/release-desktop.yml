@@ -4,10 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
-    paths:
-      - '.github/workflows/release-desktop.yml'
 
 permissions:
   contents: write
@@ -66,16 +62,19 @@ jobs:
         run: |
           $tag = "${{ steps.version.outputs.tag }}"
           $version = "${{ steps.version.outputs.version }}"
-          gh release view $tag --repo "${{ github.repository }}" *> $null
+          $repository = "${{ github.repository }}"
+          gh api "repos/$repository/releases/tags/$tag" --silent 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo "${{ github.repository }}" --verify-tag --generate-notes --title "风沙图表工作台 $version"
+            gh release create $tag --repo $repository --verify-tag --generate-notes --title "风沙图表工作台 $version"
+            if ($LASTEXITCODE -ne 0) {
+              throw "GitHub Release 创建失败"
+            }
           }
           gh release upload $tag `
             "release/Fengsha-Diagram-Setup-$version-x64.exe" `
             "release/Fengsha-Diagram-Setup-$version-x64.exe.blockmap" `
             "release/latest.yml" `
-            --clobber --repo "${{ github.repository }}"
+            --clobber --repo $repository
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub Release 资产上传失败"
           }
-          gh release edit $tag --repo "${{ github.repository }}" --title "风沙图表工作台 $version"
