@@ -18,7 +18,7 @@ export function VisualInspector(props: VisualInspectorProps) {
         <span>当前可视化图</span>
         <button className="inspector-close" onClick={props.onClose} aria-label="关闭画布 AI" title="关闭画布 AI"><X size={16} /></button>
       </div>
-      <div className="inspector-content">
+      <div className="inspector-content ai-inspector-content">
         <VisualAiAssistant document={props.document} onApplyXml={props.onApplyXml} onApplyMermaid={props.onApplyMermaid} onOpenSettings={props.onOpenSettings} />
       </div>
     </aside>

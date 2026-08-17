@@ -108,6 +108,7 @@ function App() {
   const [convertInfoOpen, setConvertInfoOpen] = useState(false)
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null)
   const [renderError, setRenderError] = useState<RenderError | null>(null)
+  const [aiPreview, setAiPreview] = useState<{ documentId: string; code: string } | null>(null)
   const [resizing, setResizing] = useState(false)
   const [resizingInspector, setResizingInspector] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -141,6 +142,9 @@ function App() {
 
   const handleResult = useCallback((result: RenderResult | null) => setRenderResult(result), [])
   const handleRenderError = useCallback((error: RenderError | null) => setRenderError(error), [])
+  const handleAiPreviewCandidate = useCallback((code: string | null) => {
+    setAiPreview(code && activeId ? { documentId: activeId, code } : null)
+  }, [activeId])
   const showNotice = useCallback((message: string) => {
     setNotice(message)
     window.setTimeout(() => setNotice(null), 4200)
@@ -195,6 +199,10 @@ function App() {
   }, [active?.engine, active?.id])
 
   useEffect(() => {
+    if (!preferences.inspectorOpen || aiPreview?.documentId !== active?.id) setAiPreview(null)
+  }, [active?.id, aiPreview?.documentId, preferences.inspectorOpen])
+
+  useEffect(() => {
     if (!visualIsActive) return
     const frame = window.requestAnimationFrame(() => visualCanvasRef.current?.fit())
     return () => window.cancelAnimationFrame(frame)
@@ -222,11 +230,12 @@ function App() {
 
   const clampInspectorWidth = useCallback((requestedWidth: number) => {
     const availableWidth = workspaceRowRef.current?.getBoundingClientRect().width ?? viewportWidth
+    const minimumWorkspaceWidth = active?.engine === 'mermaid' && layout.view === 'split' ? 900 : 620
     const maximum = layout.inspectorMode === 'docked'
-      ? Math.min(720, Math.max(380, availableWidth - 620))
+      ? Math.min(720, Math.max(380, availableWidth - minimumWorkspaceWidth))
       : Math.min(720, Math.max(380, availableWidth - 24))
     return Math.max(380, Math.min(maximum, requestedWidth))
-  }, [layout.inspectorMode, viewportWidth])
+  }, [active?.engine, layout.inspectorMode, layout.view, viewportWidth])
 
   useEffect(() => {
     if (!resizingInspector) return
@@ -338,6 +347,8 @@ function App() {
                 onError={handleRenderError}
                 onFocusError={(line) => editorRef.current?.focusLine(line)}
                 onShowSource={layout.view === 'canvas' ? () => updatePreferences({ workspaceView: 'split' }) : undefined}
+                previewCode={aiPreview && aiPreview.documentId === active?.id ? aiPreview.code : null}
+                onExitPreview={() => setAiPreview(null)}
               />
             </div>
           )}
@@ -377,8 +388,9 @@ function App() {
                 {active.engine === 'mermaid' ? (
                   <Inspector
                     onInsert={(code) => editorRef.current?.insert(code)}
-                    onClose={() => updatePreferences({ inspectorOpen: false })}
+                    onClose={() => { setAiPreview(null); updatePreferences({ inspectorOpen: false }) }}
                     onOpenSettings={() => setSettingsOpen(true)}
+                    onPreviewCandidate={handleAiPreviewCandidate}
                     renderError={renderError}
                   />
                 ) : (

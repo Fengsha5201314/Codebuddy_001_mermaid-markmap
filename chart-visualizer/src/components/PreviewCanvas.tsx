@@ -13,6 +13,7 @@ import {
   PencilLine,
   Plus,
   RotateCcw,
+  Sparkles,
   Code2,
   TriangleAlert,
   X,
@@ -33,6 +34,8 @@ interface PreviewCanvasProps {
   onError: (error: RenderError | null) => void
   onFocusError: (line?: number) => void
   onShowSource?: () => void
+  previewCode?: string | null
+  onExitPreview?: () => void
 }
 
 interface CanvasView {
@@ -64,7 +67,7 @@ function labelElementFromTarget(target: Element): Element | null {
   return label && renderedRoot.contains(label) ? label : null
 }
 
-export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }: PreviewCanvasProps) {
+export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, previewCode, onExitPreview }: PreviewCanvasProps) {
   const documents = useWorkspaceStore((state) => state.documents)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const preferences = useWorkspaceStore((state) => state.preferences)
@@ -80,7 +83,9 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
   const feedbackTimerRef = useRef<number | null>(null)
   const [result, setResult] = useState<RenderResult | null>(null)
   const [lastGoodResult, setLastGoodResult] = useState<RenderResult | null>(null)
+  const [candidateResult, setCandidateResult] = useState<RenderResult | null>(null)
   const [error, setError] = useState<RenderError | null>(null)
+  const [candidateError, setCandidateError] = useState<RenderError | null>(null)
   const [rendering, setRendering] = useState(false)
   const [renderTime, setRenderTime] = useState(0)
   const [view, setView] = useState<CanvasView>({ x: 0, y: 0, zoom: 1 })
@@ -209,6 +214,11 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
       setInlineEditor(null)
       setView({ x: 0, y: 0, zoom: 1 })
     }
+    if (previewCode) {
+      setCandidateResult(null)
+      setCandidateError(null)
+      fitModeRef.current = true
+    }
     const request = ++requestRef.current
     // A previous good diagram may remain visible while the new source is
     // checked, but it must not remain eligible for export.
@@ -217,14 +227,20 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
       const started = performance.now()
       setRendering(true)
       try {
-        const rendered = await renderDiagram(active.code, getDiagramTheme(active.themeId))
+        const rendered = await renderDiagram(previewCode ?? active.code, getDiagramTheme(active.themeId))
         if (request !== requestRef.current) return
         displayedResultRef.current = rendered
-        setResult(rendered)
-        setLastGoodResult(rendered)
-        setError(null)
-        onError(null)
-        onResult(rendered)
+        if (previewCode) {
+          setCandidateResult(rendered)
+          setCandidateError(null)
+          onResult(null)
+        } else {
+          setResult(rendered)
+          setLastGoodResult(rendered)
+          setError(null)
+          onError(null)
+          onResult(rendered)
+        }
         setRenderTime(Math.round(performance.now() - started))
         if (fitModeRef.current) window.requestAnimationFrame(() => fit(rendered))
       } catch (caught) {
@@ -232,19 +248,27 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
         const normalized = isRenderError(caught)
           ? caught
           : { message: '渲染失败，请检查图表语法。', raw: String(caught) }
-        setResult(null)
-        setError(normalized)
-        onError(normalized)
+        if (previewCode) {
+          setCandidateResult(null)
+          setCandidateError(normalized)
+        } else {
+          setResult(null)
+          setError(normalized)
+          onError(normalized)
+        }
         onResult(null)
       } finally {
         if (request === requestRef.current) setRendering(false)
       }
     }, preferences.renderDelay)
     return () => window.clearTimeout(timeout)
-  }, [active?.code, active?.themeId, active?.id, fit, onError, onResult, preferences.renderDelay])
+  }, [active?.code, active?.themeId, active?.id, fit, onError, onResult, preferences.renderDelay, previewCode])
 
   if (!active) return null
-  const displayed = activeDocumentRef.current === active.id ? result ?? lastGoodResult : null
+  const displayed = activeDocumentRef.current === active.id
+    ? previewCode ? candidateResult : result ?? lastGoodResult
+    : null
+  const visibleError = previewCode ? candidateError : error
   const theme = getDiagramTheme(active.themeId)
 
   const openInlineEditor = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -253,6 +277,11 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
     if (!label) return
     event.preventDefault()
     event.stopPropagation()
+
+    if (previewCode) {
+      showCanvasFeedback('这是尚未应用的 AI 候选，请先在右侧确认应用')
+      return
+    }
 
     if (error) {
       showCanvasFeedback('请先修正源码语法，再从画布编辑文字')
@@ -290,17 +319,19 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
       <div className="panel-titlebar preview-titlebar">
         <div className="panel-title">
           <Focus size={15} />
-          <strong>实时预览</strong>
+          <strong>{previewCode ? 'AI 候选预览' : '实时预览'}</strong>
           {rendering ? (
             <span className="render-badge pending"><LoaderCircle size={12} className="spin" />渲染中</span>
-          ) : error ? (
+          ) : visibleError ? (
             <span className="render-badge error"><TriangleAlert size={12} />语法问题</span>
           ) : (
             <span className="render-badge success"><CheckCircle2 size={12} />{renderTime} ms</span>
           )}
-          <span className="preview-edit-badge"><PencilLine size={11} />双击文字可编辑</span>
+          {!previewCode && <span className="preview-edit-badge"><PencilLine size={11} />双击文字可编辑</span>}
+          {previewCode && <span className="ai-candidate-preview-badge"><Sparkles size={11} />尚未应用</span>}
         </div>
         <div className="canvas-actions">
+          {previewCode && onExitPreview && <button className="show-source-action" onClick={onExitPreview} title="返回当前图" aria-label="返回当前图"><RotateCcw size={15} /><span>返回当前图</span></button>}
           {onShowSource && <button className="show-source-action" onClick={onShowSource} title="显示源码区" aria-label="显示源码区"><Code2 size={15} /><span>显示源码</span></button>}
           <button onClick={() => updatePreferences({ canvasGrid: !preferences.canvasGrid })} className={preferences.canvasGrid ? 'active' : ''} title="网格" aria-label="切换画布网格">
             <Grid3X3 size={15} />
@@ -364,7 +395,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
       >
         {displayed ? (
           <div
-            className={`diagram-stage ${error ? 'stale' : ''}`}
+            className={`diagram-stage ${visibleError ? 'stale' : ''}`}
             style={{
               width: `${displayed.width}px`,
               height: `${displayed.height}px`,
@@ -437,12 +468,12 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource }:
 
         {canvasFeedback && <div className="canvas-feedback"><CheckCircle2 size={14} />{canvasFeedback}</div>}
 
-        {error && (
-          <button className="error-banner" onClick={() => onFocusError(error.line)}>
+        {visibleError && (
+          <button className="error-banner" onClick={() => previewCode ? onExitPreview?.() : onFocusError(visibleError.line)}>
             <TriangleAlert size={17} />
             <span>
-              <strong>{error.line ? `第 ${error.line} 行：` : ''}{error.message}</strong>
-              <small>{lastGoodResult ? '当前保留上一次成功预览，点击定位源码。' : '点击返回源码检查。'}</small>
+              <strong>{visibleError.line ? `第 ${visibleError.line} 行：` : ''}{visibleError.message}</strong>
+              <small>{previewCode ? '候选预览异常，点击返回当前图。' : lastGoodResult ? '当前保留上一次成功预览，点击定位源码。' : '点击返回源码检查。'}</small>
             </span>
           </button>
         )}

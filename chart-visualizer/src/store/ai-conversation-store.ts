@@ -17,6 +17,27 @@ export interface AiConversationThread {
   messages: AiConversationMessage[]
 }
 
+export function buildAiConversationContext(messages: AiConversationMessage[], maximumCharacters = 32_000) {
+  if (!messages.length) return []
+  const firstUserIndex = messages.findIndex((message) => message.role === 'user')
+  const anchor = firstUserIndex >= 0 ? messages[firstUserIndex] : undefined
+  const selected: AiConversationMessage[] = []
+  let usedCharacters = anchor?.content.length ?? 0
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.id === anchor?.id) continue
+    if (selected.length >= 6 && usedCharacters + message.content.length > maximumCharacters) break
+    selected.unshift(message)
+    usedCharacters += message.content.length
+  }
+
+  const context = anchor && !selected.some((message) => message.id === anchor.id)
+    ? [anchor, ...selected]
+    : selected
+  return context.map(({ role, content }) => ({ role, content }))
+}
+
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
@@ -74,7 +95,7 @@ export const useAiConversationStore = create<AiConversationState>()(
               ...thread,
               title: firstUserMessage ? content.replace(/\s+/g, ' ').slice(0, 22) : thread.title,
               updatedAt: timestamp,
-              messages: [...thread.messages, { id: id('message'), role, content: content.slice(0, 4000), createdAt: timestamp }].slice(-40),
+              messages: [...thread.messages, { id: id('message'), role, content: content.slice(0, 4000), createdAt: timestamp }].slice(-120),
             }
           }),
         }))

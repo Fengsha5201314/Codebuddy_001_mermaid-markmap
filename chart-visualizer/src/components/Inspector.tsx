@@ -10,12 +10,13 @@ interface InspectorProps {
   onInsert: (code: string) => void
   onClose: () => void
   onOpenSettings: () => void
+  onPreviewCandidate: (code: string | null) => void
   renderError: RenderError | null
 }
 
 type InspectorTab = 'ai' | 'style' | 'snippets' | 'versions'
 
-export function Inspector({ onInsert, onClose, onOpenSettings, renderError }: InspectorProps) {
+export function Inspector({ onInsert, onClose, onOpenSettings, onPreviewCandidate, renderError }: InspectorProps) {
   const documents = useWorkspaceStore((state) => state.documents)
   const activeId = useWorkspaceStore((state) => state.activeDocumentId)
   const update = useWorkspaceStore((state) => state.updateActiveDocument)
@@ -54,8 +55,8 @@ export function Inspector({ onInsert, onClose, onOpenSettings, renderError }: In
         </button>
       </div>
 
-      <div className="inspector-content">
-        {tab === 'ai' && <AiAssistant renderError={renderError} onOpenSettings={onOpenSettings} />}
+      <div className={`inspector-content ${tab === 'ai' ? 'ai-inspector-content' : ''}`}>
+        {tab === 'ai' && <AiAssistant renderError={renderError} onOpenSettings={onOpenSettings} onPreviewCandidate={onPreviewCandidate} />}
         {tab === 'style' && (
           <>
             <div className="inspector-heading">
