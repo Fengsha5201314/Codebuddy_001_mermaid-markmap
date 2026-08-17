@@ -9,6 +9,7 @@ type VisualDeliveryFormat = 'xml' | 'svg' | 'png' | 'pdf'
 interface VisualExportDialogProps {
   open: boolean
   onClose: () => void
+  onSuccess: (fileName: string) => void
   title: string
   fallbackXml: string
   onExport: (format: DrawioExportFormat) => Promise<DrawioExportResult>
@@ -45,7 +46,7 @@ function triggerDownload(data: string, fileName: string, mime: string) {
   if (anchor.href.startsWith('blob:')) window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1000)
 }
 
-export function VisualExportDialog({ open, onClose, title, fallbackXml, onExport }: VisualExportDialogProps) {
+export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXml, onExport }: VisualExportDialogProps) {
   const [format, setFormat] = useState<VisualDeliveryFormat>('xml')
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -76,12 +77,16 @@ export function VisualExportDialog({ open, onClose, title, fallbackXml, onExport
           : result.xml
       if (!raw) throw new Error('画布没有返回可下载内容，请稍后重试。')
       if (format === 'svg') raw = makePortableDrawioSvg(raw)
-      triggerDownload(raw, `${safeName(title)}.${extensions[format]}`, mimes[format])
+      const fileName = `${safeName(title)}.${extensions[format]}`
+      triggerDownload(raw, fileName, mimes[format])
       onClose()
+      onSuccess(fileName)
     } catch (downloadError) {
       if (format === 'xml' && fallbackXml.trim()) {
-        triggerDownload(fallbackXml, `${safeName(title)}.drawio`, 'application/vnd.jgraph.mxfile')
+        const fileName = `${safeName(title)}.drawio`
+        triggerDownload(fallbackXml, fileName, 'application/vnd.jgraph.mxfile')
         onClose()
+        onSuccess(fileName)
       } else {
         setError(downloadError instanceof Error ? downloadError.message : '导出失败，请稍后重试。')
       }

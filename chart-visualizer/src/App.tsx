@@ -114,7 +114,7 @@ function App() {
   const handleRenderError = useCallback((error: RenderError | null) => setRenderError(error), [])
   const showNotice = useCallback((message: string) => {
     setNotice(message)
-    window.setTimeout(() => setNotice(null), 2600)
+    window.setTimeout(() => setNotice(null), 4200)
   }, [])
 
   useEffect(() => {
@@ -358,6 +358,7 @@ function App() {
         <VisualExportDialog
           open={exportOpen}
           onClose={() => setExportOpen(false)}
+          onSuccess={(fileName) => showNotice(`已生成并开始下载：${fileName}`)}
           title={active.title}
           fallbackXml={active.drawioXml ?? ''}
           onExport={(format) => {

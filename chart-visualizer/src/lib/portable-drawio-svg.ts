@@ -1,4 +1,7 @@
 const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const DEFAULT_TEXT_COLOR = '#333333'
+const DEFAULT_CJK_FONT_FALLBACK = "'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif"
 
 function decodeSvgData(data: string): string {
   const match = data.match(/^data:image\/svg\+xml(?:;charset=[^;,]+)?(;base64)?,(.*)$/is)
@@ -49,6 +52,145 @@ function removeCompatibilityWarning(svg: SVGSVGElement) {
   })
 }
 
+function readCssProperty(style: string, property: string): string | undefined {
+  const match = style.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, 'i'))
+  return match?.[1]?.trim()
+}
+
+function extractHtmlLabelLines(root: Element): string[] {
+  const lines = ['']
+  const blockElements = new Set(['div', 'p', 'li', 'section', 'article', 'header', 'footer'])
+  const nextLine = () => {
+    if (lines[lines.length - 1].trim()) lines.push('')
+  }
+  const visit = (node: Node, isRoot = false) => {
+    if (node.nodeType === 3) {
+      lines[lines.length - 1] += node.textContent ?? ''
+      return
+    }
+    if (!(node instanceof Element)) return
+    const name = node.localName.toLowerCase()
+    if (name === 'br') {
+      nextLine()
+      return
+    }
+    const block = !isRoot && blockElements.has(name)
+    if (block) nextLine()
+    Array.from(node.childNodes).forEach((child) => visit(child))
+    if (block) nextLine()
+  }
+  visit(root, true)
+  return lines
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+}
+
+function numericAttribute(element: Element, name: string): number {
+  const parsed = Number.parseFloat(element.getAttribute(name) ?? '')
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function createNativeTextFallback(foreignObject: Element): SVGTextElement | undefined {
+  const content = foreignObject.querySelector('[style]') ?? foreignObject.firstElementChild ?? foreignObject
+  const lines = extractHtmlLabelLines(content)
+  if (!lines.length) return undefined
+
+  const style = content.getAttribute('style') ?? ''
+  const fontSizeValue = readCssProperty(style, 'font-size') ?? '12px'
+  const parsedFontSize = Number.parseFloat(fontSizeValue)
+  const fontSize = Number.isFinite(parsedFontSize) && parsedFontSize > 0 ? parsedFontSize : 12
+  const left = numericAttribute(foreignObject, 'x')
+  const top = numericAttribute(foreignObject, 'y')
+  const width = numericAttribute(foreignObject, 'width')
+  const height = numericAttribute(foreignObject, 'height')
+  const x = left + width / 2
+  const lineHeight = fontSize * 1.2
+  const y = top + height / 2 - ((lines.length - 1) * lineHeight) / 2
+  const text = foreignObject.ownerDocument.createElementNS(SVG_NAMESPACE, 'text')
+  text.setAttribute('x', String(x))
+  text.setAttribute('y', String(y))
+  text.setAttribute('text-anchor', 'middle')
+  text.setAttribute('dominant-baseline', 'middle')
+  text.setAttribute('fill', readCssProperty(style, 'color') ?? DEFAULT_TEXT_COLOR)
+  text.setAttribute('font-size', fontSizeValue)
+  text.setAttribute('font-family', readCssProperty(style, 'font-family') ?? DEFAULT_CJK_FONT_FALLBACK)
+  const fontWeight = readCssProperty(style, 'font-weight')
+  const fontStyle = readCssProperty(style, 'font-style')
+  if (fontWeight) text.setAttribute('font-weight', fontWeight)
+  if (fontStyle) text.setAttribute('font-style', fontStyle)
+
+  lines.forEach((line, index) => {
+    const tspan = foreignObject.ownerDocument.createElementNS(SVG_NAMESPACE, 'tspan')
+    tspan.setAttribute('x', String(x))
+    if (index > 0) tspan.setAttribute('dy', '1.2em')
+    tspan.textContent = line
+    text.appendChild(tspan)
+  })
+  return text
+}
+
+function copyContainerPresentation(container: Element, target: Element) {
+  for (const attribute of ['transform', 'opacity', 'visibility', 'display', 'clip-path', 'mask', 'filter']) {
+    const value = container.getAttribute(attribute)
+    if (value && !target.hasAttribute(attribute)) target.setAttribute(attribute, value)
+  }
+}
+
+function ensurePortableTextPaint(svg: Element) {
+  svg.querySelectorAll('text').forEach((text) => {
+    const style = text.getAttribute('style') ?? ''
+    const styleFill = readCssProperty(style, 'fill')
+    const attributeFill = text.getAttribute('fill')
+    const effectiveFill = styleFill ?? attributeFill
+    if (!effectiveFill || /^(?:none|transparent|inherit|currentColor)$/i.test(effectiveFill)) {
+      if (styleFill) {
+        text.setAttribute('style', style.replace(/((?:^|;)\s*fill\s*:)\s*[^;]+/i, `$1 ${DEFAULT_TEXT_COLOR}`))
+      } else {
+        text.setAttribute('fill', DEFAULT_TEXT_COLOR)
+      }
+    }
+
+    if (/[\u3400-\u9fff]/u.test(text.textContent ?? '')) {
+      const family = text.getAttribute('font-family')
+      if (!family) text.setAttribute('font-family', DEFAULT_CJK_FONT_FALLBACK)
+      else if (!/(?:Microsoft YaHei|Noto Sans CJK)/i.test(family)) {
+        text.setAttribute('font-family', `${family}, 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif`)
+      }
+    }
+  })
+}
+
+function addOpaqueWhiteBackground(svg: SVGSVGElement) {
+  const existing = svg.querySelector(':scope > [data-fengsha-export-background="true"]')
+  existing?.remove()
+  const background = svg.ownerDocument.createElementNS(SVG_NAMESPACE, 'rect')
+  background.setAttribute('data-fengsha-export-background', 'true')
+  background.setAttribute('fill', '#ffffff')
+  background.setAttribute('stroke', 'none')
+  background.setAttribute('pointer-events', 'none')
+
+  const values = (svg.getAttribute('viewBox') ?? '')
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number)
+  if (values.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0) {
+    background.setAttribute('x', String(values[0]))
+    background.setAttribute('y', String(values[1]))
+    background.setAttribute('width', String(values[2]))
+    background.setAttribute('height', String(values[3]))
+  } else {
+    background.setAttribute('x', '0')
+    background.setAttribute('y', '0')
+    background.setAttribute('width', '100%')
+    background.setAttribute('height', '100%')
+  }
+
+  const nonPainting = new Set(['defs', 'title', 'desc', 'metadata', 'style'])
+  const firstPaintingNode = Array.from(svg.children)
+    .find((child) => !nonPainting.has(child.localName.toLowerCase()))
+  svg.insertBefore(background, firstPaintingNode ?? null)
+}
+
 /**
  * Converts draw.io's HTML-label SVG into portable SVG text.
  *
@@ -68,14 +210,22 @@ export function makePortableDrawioSvg(data: string): string {
 
   svg.querySelectorAll('foreignObject').forEach((foreignObject) => {
     const switchElement = foreignObject.closest('switch')
-    if (!switchElement) {
-      foreignObject.remove()
+    const providedFallback = switchElement
+      ? Array.from(switchElement.children).find((child) => child.localName.toLowerCase() === 'text')
+      : undefined
+    const nativeText = providedFallback?.cloneNode(true) as Element | undefined
+      ?? createNativeTextFallback(foreignObject)
+    if (!nativeText) {
+      if (switchElement) switchElement.remove()
+      else foreignObject.remove()
       return
     }
-    const fallbackText = Array.from(switchElement.children)
-      .find((child) => child.localName.toLowerCase() === 'text')
-    if (fallbackText) switchElement.replaceWith(fallbackText.cloneNode(true))
-    else foreignObject.remove()
+    if (switchElement) {
+      copyContainerPresentation(switchElement, nativeText)
+      switchElement.replaceWith(nativeText)
+    } else {
+      foreignObject.replaceWith(nativeText)
+    }
   })
 
   removeCompatibilityWarning(svg as unknown as SVGSVGElement)
@@ -88,6 +238,8 @@ export function makePortableDrawioSvg(data: string): string {
     if (portable === ';' || !portable.trim()) element.removeAttribute('style')
     else element.setAttribute('style', portable)
   })
+  ensurePortableTextPaint(svg)
+  addOpaqueWhiteBackground(svg as unknown as SVGSVGElement)
 
   return new XMLSerializer().serializeToString(svg)
 }

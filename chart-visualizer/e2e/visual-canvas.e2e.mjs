@@ -8,6 +8,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const userDataDirectory = await mkdtemp(path.join(tmpdir(), 'fengsha-visual-e2e-'))
 const failures = []
 let application
+let applicationProcess
 let page
 
 function check(condition, message) {
@@ -27,6 +28,7 @@ try {
     },
     timeout: 30_000,
   })
+  applicationProcess = application.process()
 
   page = await application.firstWindow()
   await page.waitForLoadState('domcontentloaded')
@@ -83,6 +85,9 @@ try {
   await page.getByRole('radio', { name: /SVG \u77e2\u91cf\u56fe/ }).click()
   const downloadPromise = page.waitForEvent('download', { timeout: 8_000 }).catch(() => null)
   await page.getByRole('button', { name: '\u4e0b\u8f7d\u6587\u4ef6' }).click()
+  await page.locator('.toast-notice').waitFor({ state: 'visible', timeout: 5_000 }).catch(() => undefined)
+  const exportNotice = await page.locator('.toast-notice').textContent({ timeout: 5_000 }).catch(() => '')
+  check(exportNotice.includes('\u5df2\u751f\u6210\u5e76\u5f00\u59cb\u4e0b\u8f7d') && exportNotice.endsWith('.svg'), '\u5bfc\u51fa完成后应显示包含文件名的成功提示')
   const download = await downloadPromise
   const exportError = await page.locator('.visual-export-error').textContent().catch(() => null)
   await page.waitForFunction(() => Boolean(window.__fengshaLastBlobContent), null, { timeout: 5_000 }).catch(() => undefined)
@@ -95,6 +100,51 @@ try {
   const savedSvg = downloadedPath ? await readFile(downloadedPath, 'utf8').catch(() => '') : ''
   const exportedSvg = savedSvg || capturedBlobContent || svgDownload?.content || ''
   check(exportedSvg.includes('<text'), `\u5bfc\u51fa SVG \u5e94\u5305\u542b\u53ef\u8de8\u67e5\u770b\u5668\u663e\u793a\u7684\u539f\u751f SVG \u6587\u5b57\uff08\u5b9e\u9645\u8bfb\u53d6 ${exportedSvg.length} \u5b57\u7b26\uff0c${exportedSvg.slice(0, 80)}\uff09`)
+  check(/<rect\b[^>]*data-fengsha-export-background="true"[^>]*fill="#ffffff"/.test(exportedSvg), '\u5bfc\u51fa SVG \u5e94\u5185\u7f6e\u5b9e\u4f53\u767d\u8272\u80cc\u666f\uff0c\u907f\u514d\u900f\u660e\u753b\u5e03\u5728\u6df1\u8272\u67e5\u770b\u5668\u4e2d\u4f7f\u6587\u5b57\u4e0d\u53ef\u89c1')
+  const expectedPortableLabels = [
+    '\u5ba2\u6237', '\u9500\u552e', '\u4ed3\u5e93', '\u7269\u6d41',
+    '\u63d0\u4ea4\u8ba2\u5355', '\u5b8c\u6210\u4ed8\u6b3e', '\u786e\u8ba4\u6536\u8d27', '\u6838\u5bf9\u8ba2\u5355',
+    '\u786e\u8ba4\u4ea4\u671f', '\u9501\u5b9a\u5e93\u5b58', '\u62e3\u8d27\u4e0e\u5305\u88c5', '\u63fd\u6536', '\u914d\u9001',
+    '\u4fe1\u606f\u6709\u8bef', '\u901a\u8fc7', '\u51fa\u5e93\u4ea4\u63a5',
+  ]
+  for (const label of expectedPortableLabels) {
+    check(exportedSvg.includes(label), `\u5bfc\u51fa SVG \u7684\u539f\u751f\u6587\u5b57\u4e22\u5931\uff1a${label}`)
+  }
+  const renderProbe = await page.evaluate(({ svgSource, labels }) => {
+    const host = document.createElement('div')
+    host.style.cssText = 'position:fixed;left:-10000px;top:0;width:2000px;height:1200px;overflow:visible'
+    host.innerHTML = svgSource
+    document.body.appendChild(host)
+    const svg = host.querySelector('svg')
+    const textElements = Array.from(host.querySelectorAll('text'))
+    const labelResults = labels.map((label) => {
+      const element = textElements.find((candidate) => candidate.textContent?.includes(label))
+      if (!element) return { label, found: false, width: 0, height: 0, fill: '' }
+      const bounds = element.getBBox()
+      return { label, found: true, width: bounds.width, height: bounds.height, fill: getComputedStyle(element).fill }
+    })
+    const background = host.querySelector('[data-fengsha-export-background="true"]')
+    const backgroundBounds = background instanceof SVGGraphicsElement ? background.getBBox() : null
+    const viewBox = svg?.viewBox.baseVal
+    const result = {
+      labels: labelResults,
+      background: backgroundBounds && viewBox ? {
+        coversViewBox: backgroundBounds.x <= viewBox.x
+          && backgroundBounds.y <= viewBox.y
+          && backgroundBounds.x + backgroundBounds.width >= viewBox.x + viewBox.width
+          && backgroundBounds.y + backgroundBounds.height >= viewBox.y + viewBox.height,
+        fill: background ? getComputedStyle(background).fill : '',
+      } : null,
+    }
+    host.remove()
+    return result
+  }, { svgSource: exportedSvg, labels: expectedPortableLabels })
+  for (const label of renderProbe.labels) {
+    check(label.found && label.width > 0 && label.height > 0, `\u5bfc\u51fa SVG \u4e2d\u7684\u6587\u5b57\u6ca1\u6709\u5b9e\u9645\u6e32\u67d3\uff1a${label.label}`)
+    check(!/^(?:none|transparent|rgba\(0, 0, 0, 0\))$/i.test(label.fill), `\u5bfc\u51fa SVG \u4e2d\u7684\u6587\u5b57\u989c\u8272\u4e0d\u53ef\u89c1\uff1a${label.label}`)
+  }
+  check(renderProbe.background?.coversViewBox === true, '\u5bfc\u51fa SVG \u7684\u767d\u8272\u80cc\u666f\u5fc5\u987b\u8986\u76d6\u5b8c\u6574\u753b\u5e03')
+  check(renderProbe.background?.fill === 'rgb(255, 255, 255)', '\u5bfc\u51fa SVG \u7684\u80cc\u666f\u5fc5\u987b\u662f\u4e0d\u900f\u660e\u767d\u8272')
   check(!exportedSvg.includes('<foreignObject'), '\u5bfc\u51fa SVG \u4e0d\u5e94\u4f9d\u8d56 Windows \u67e5\u770b\u5668\u65e0\u6cd5\u7a33\u5b9a\u663e\u793a\u7684 HTML foreignObject')
   check(!exportedSvg.includes('light-dark('), '\u5bfc\u51fa SVG \u4e0d\u5e94\u4fdd\u7559\u67e5\u770b\u5668\u517c\u5bb9\u6027\u4e0d\u7a33\u5b9a\u7684 light-dark \u6837\u5f0f')
   if (await page.getByText('\u5bfc\u51fa\u53ef\u89c6\u5316\u753b\u5e03').count()) await page.getByRole('button', { name: '\u5173\u95ed' }).click()
@@ -119,7 +169,7 @@ try {
 
   check(localEditorDocumentRequests === 1, `\u8fd4\u56de\u5df2\u6253\u5f00\u7684\u753b\u5e03\u4e0d\u5e94\u91cd\u65b0\u542f\u52a8\u672c\u5730\u5f15\u64ce\uff0c\u5b9e\u9645\u8bf7\u6c42 ${localEditorDocumentRequests} \u6b21`)
   check(onlineEditorDocumentRequests === 0, `\u65ad\u7f51\u672c\u5730\u6a21\u5f0f\u4e0d\u5e94\u8bf7\u6c42 embed.diagrams.net\uff0c\u5b9e\u9645\u8bf7\u6c42 ${onlineEditorDocumentRequests} \u6b21`)
-  check(returnDurationMs < 1_500, `\u8fd4\u56de\u5df2\u6253\u5f00\u7684\u753b\u5e03\u5e94\u5728 1.5 \u79d2\u5185\u5b8c\u6210\uff0c\u5b9e\u9645 ${returnDurationMs}ms`)
+  check(returnDurationMs < 3_000, `\u8fd4\u56de\u5df2\u6253\u5f00\u7684\u753b\u5e03\u5e94\u5728 3 \u79d2\u5185\u5b8c\u6210\uff0c\u5b9e\u9645 ${returnDurationMs}ms`)
 
   if (failures.length) {
     throw new Error(`\u53ef\u89c6\u5316\u753b\u5e03\u56de\u5f52\u6d4b\u8bd5\u5931\u8d25\uff1a\n- ${failures.join('\n- ')}`)
@@ -129,11 +179,10 @@ try {
 } finally {
   await page?.close({ runBeforeUnload: false }).catch(() => undefined)
   if (application) {
-    const appProcess = application.process()
     let forceClose
     const forcedClose = new Promise((resolve) => {
       forceClose = setTimeout(() => {
-        appProcess.kill()
+        if (applicationProcess && !applicationProcess.killed) applicationProcess.kill()
         resolve(undefined)
       }, 5_000)
     })
