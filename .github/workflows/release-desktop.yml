@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-desktop.yml'
 
 permissions:
   contents: write
@@ -36,18 +40,36 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: 校验标签与软件版本
+        id: version
         shell: pwsh
         run: |
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tagVersion = "${{ github.ref_name }}" -replace '^v', ''
-          if ($packageVersion -ne $tagVersion) {
-            throw "标签版本 $tagVersion 与 package.json 版本 $packageVersion 不一致"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tagVersion = "${{ github.ref_name }}" -replace '^v', ''
+            if ($packageVersion -ne $tagVersion) {
+              throw "标签版本 $tagVersion 与 package.json 版本 $packageVersion 不一致"
+            }
           }
+          "version=$packageVersion" >> $env:GITHUB_OUTPUT
+          "tag=v$packageVersion" >> $env:GITHUB_OUTPUT
 
       - name: 测试
         run: pnpm test
 
-      - name: 构建并发布安装包
-        run: pnpm desktop:publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建安装包
+        run: pnpm desktop:build
+
+      - name: 发布安装包和自动更新元数据
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 风沙图表工作台 ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          working_directory: chart-visualizer
+          preserve_order: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            release/Fengsha-Diagram-Setup-${{ steps.version.outputs.version }}-x64.exe
+            release/Fengsha-Diagram-Setup-${{ steps.version.outputs.version }}-x64.exe.blockmap
+            release/latest.yml
