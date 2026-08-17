@@ -233,11 +233,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .zoom-dock > span { width: 1px; height: 16px; margin: 0 3px; background: var(--line); }
 .canvas-metrics { position: absolute; right: 12px; bottom: 12px; z-index: 4; padding: 5px 7px; border-radius: 4px; background: rgba(255,255,255,.76); color: #7d8998; font-family: "Cascadia Code", Consolas, monospace; font-size: 8px; }
 
-.inspector { width: clamp(360px, 25vw, 420px); flex: 0 0 clamp(360px, 25vw, 420px); min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: #fff; }
-.inspector-docked .inspector { position: relative; z-index: 2; }
-.inspector-overlay .inspector { position: absolute; right: 0; top: 0; bottom: 0; z-index: 31; box-shadow: -18px 0 48px rgba(30,47,68,.16); animation: drawer-in .18s ease-out; }
+.inspector-shell { --inspector-width: 480px; width: calc(var(--inspector-width) + 6px); flex: 0 0 calc(var(--inspector-width) + 6px); min-width: 0; min-height: 0; display: flex; position: relative; z-index: 31; }
+.inspector { width: var(--inspector-width); flex: 0 0 var(--inspector-width); min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: #fff; }
+.inspector-docked .inspector-shell { position: relative; z-index: 2; }
+.inspector-overlay .inspector-shell { position: absolute; right: 0; top: 0; bottom: 0; box-shadow: -18px 0 48px rgba(30,47,68,.16); animation: drawer-in .18s ease-out; }
 @keyframes drawer-in { from { opacity: 0; transform: translateX(18px); } }
 .inspector-overlay .inspector-scrim { display: block; position: absolute; inset: 0; z-index: 30; background: rgba(19,38,63,.1); cursor: default; }
+.inspector-resizer { position: relative; width: 6px; flex: 0 0 6px; padding: 0; border: 0; border-left: 1px solid #d9e0e8; border-right: 1px solid #edf1f5; background: #f1f4f7; cursor: col-resize; z-index: 3; }
+.inspector-resizer span { position: absolute; left: 1px; top: calc(50% - 22px); width: 2px; height: 44px; border-radius: 2px; background: #bdc8d5; }
+.inspector-resizer:hover,.inspector-resizer:focus-visible,.is-resizing .inspector-resizer { border-color: #9db9eb; background: #e3ecfb; }
+.inspector-resizer:hover span,.inspector-resizer:focus-visible span,.is-resizing .inspector-resizer span { background: var(--blue); }
 .inspector-tabs { height: 44px; flex: 0 0 44px; display: grid; grid-template-columns: repeat(4, 1fr) 42px; border-bottom: 1px solid var(--line); background: #f7f9fb; }
 .inspector-tabs button { display: flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #798698; font-size: 10px; cursor: pointer; }
 .inspector-tabs button:hover { color: #35465b; }
@@ -869,7 +874,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .workspace-view-switch { min-width: 138px; }
   .view-button { flex: 1; min-width: 64px; }
   .title-editor input { width: min(26vw, 240px); }
-  .inspector { width: min(400px, calc(100% - 24px)); flex-basis: auto; }
+  .inspector-shell { max-width: calc(100% - 24px); }
+  .inspector-shell .inspector { min-width: 0; flex: 1; }
 }
 
 @media (max-width: 900px) {
@@ -906,7 +912,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .top-actions .toolbar-button { width: 32px; padding: 0; justify-content: center; }
   .top-actions .toolbar-button span { display: none; }
   .topbar-more-menu { position: fixed; right: 8px; top: 49px; width: min(236px, calc(100vw - 68px)); }
-  .inspector { width: 100%; }
+  .inspector-shell { width: 100%; max-width: 100%; flex-basis: 100%; }
+  .inspector-shell .inspector { width: calc(100% - 6px); flex-basis: auto; }
   .panel-titlebar { height: 42px; flex-basis: 42px; padding-inline: 9px; }
   .panel-title .preview-edit-badge { display: none; }
   .canvas-gesture-guide { display: none; }

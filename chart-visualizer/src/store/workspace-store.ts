@@ -83,6 +83,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       activeDocumentId: starter.id,
       preferences: {
         editorRatio: 38,
+        inspectorWidth: 480,
         workspaceView: 'split',
         sidebarCollapsed: false,
         inspectorOpen: false,
@@ -442,6 +443,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const editorRatio = typeof savedPreferences.editorRatio === 'number' && Number.isFinite(savedPreferences.editorRatio)
           ? Math.max(28, Math.min(68, savedPreferences.editorRatio))
           : currentState.preferences.editorRatio
+        const inspectorWidth = typeof savedPreferences.inspectorWidth === 'number' && Number.isFinite(savedPreferences.inspectorWidth)
+          ? Math.max(380, Math.min(720, savedPreferences.inspectorWidth))
+          : currentState.preferences.inspectorWidth
         const renderDelay = typeof savedPreferences.renderDelay === 'number' && Number.isFinite(savedPreferences.renderDelay)
           ? Math.max(100, Math.min(2000, savedPreferences.renderDelay))
           : currentState.preferences.renderDelay
@@ -473,6 +477,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           activeDocumentId,
           preferences: {
             editorRatio,
+            inspectorWidth,
             workspaceView,
             renderDelay,
             aiEnabledModels,

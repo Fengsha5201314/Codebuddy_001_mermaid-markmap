@@ -119,6 +119,7 @@ export type VisualEditorMode = 'local' | 'online'
 
 export interface WorkspacePreferences {
   editorRatio: number
+  inspectorWidth: number
   workspaceView: WorkspaceView
   sidebarCollapsed: boolean
   inspectorOpen: boolean

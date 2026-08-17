@@ -99,6 +99,7 @@ function App() {
   const visualCanvasRef = useRef<VisualCanvasHandle>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
+  const workspaceRowRef = useRef<HTMLDivElement>(null)
   const [templateOpen, setTemplateOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -108,6 +109,7 @@ function App() {
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null)
   const [renderError, setRenderError] = useState<RenderError | null>(null)
   const [resizing, setResizing] = useState(false)
+  const [resizingInspector, setResizingInspector] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const viewportWidth = useViewportWidth()
   const layout = getResponsiveWorkspaceLayout(viewportWidth, preferences.workspaceView)
@@ -218,6 +220,31 @@ function App() {
     }
   }, [resizing, updatePreferences])
 
+  const clampInspectorWidth = useCallback((requestedWidth: number) => {
+    const availableWidth = workspaceRowRef.current?.getBoundingClientRect().width ?? viewportWidth
+    const maximum = layout.inspectorMode === 'docked'
+      ? Math.min(720, Math.max(380, availableWidth - 620))
+      : Math.min(720, Math.max(380, availableWidth - 24))
+    return Math.max(380, Math.min(maximum, requestedWidth))
+  }, [layout.inspectorMode, viewportWidth])
+
+  useEffect(() => {
+    if (!resizingInspector) return
+    const onMove = (event: PointerEvent) => {
+      const container = workspaceRowRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      updatePreferences({ inspectorWidth: clampInspectorWidth(rect.right - event.clientX) })
+    }
+    const onUp = () => setResizingInspector(false)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [clampInspectorWidth, resizingInspector, updatePreferences])
+
   const handleFileImport = async (file?: File) => {
     if (!file) return
     try {
@@ -242,7 +269,7 @@ function App() {
   }
 
   return (
-    <div className={`app-shell layout-${layout.breakpoint} ${resizing ? 'is-resizing' : ''}`}>
+    <div className={`app-shell layout-${layout.breakpoint} ${resizing || resizingInspector ? 'is-resizing' : ''}`}>
       <Sidebar onNew={() => setTemplateOpen(true)} />
       {!preferences.sidebarCollapsed && (
         <button
@@ -278,7 +305,7 @@ function App() {
           } : undefined}
         />
 
-        <div className={`workspace-row view-${active?.engine === 'drawio' ? 'canvas' : layout.view} inspector-${layout.inspectorMode}`}>
+        <div ref={workspaceRowRef} className={`workspace-row view-${active?.engine === 'drawio' ? 'canvas' : layout.view} inspector-${layout.inspectorMode}`}>
           {cachedVisual && (
             <div className={`visual-workspace ${visualIsActive ? 'is-active' : 'is-cached'}`} aria-hidden={!visualIsActive}>
               <VisualCanvas
@@ -321,36 +348,63 @@ function App() {
                 onClick={() => updatePreferences({ inspectorOpen: false })}
                 aria-label="关闭工具面板"
               />
-              {active.engine === 'mermaid' ? (
-                <Inspector
-                  onInsert={(code) => editorRef.current?.insert(code)}
-                  onClose={() => updatePreferences({ inspectorOpen: false })}
-                  onOpenSettings={() => setSettingsOpen(true)}
-                  renderError={renderError}
-                />
-              ) : (
-                <VisualInspector
-                  document={active}
-                  onApplyXml={(xml) => {
-                    try {
-                      visualCanvasRef.current?.loadXml(xml)
-                      showNotice('AI 修改正在应用到可视化画布')
-                    } catch (error) {
-                      showNotice(error instanceof Error ? error.message : '画布暂时无法接收 AI 修改')
-                    }
+              <div
+                className="inspector-shell"
+                style={{ '--inspector-width': `${clampInspectorWidth(preferences.inspectorWidth)}px` } as React.CSSProperties}
+              >
+                <button
+                  className="inspector-resizer"
+                  role="separator"
+                  aria-label="调整右侧工具面板宽度"
+                  aria-orientation="vertical"
+                  aria-valuemin={380}
+                  aria-valuemax={720}
+                  aria-valuenow={Math.round(preferences.inspectorWidth)}
+                  title="拖动调整右栏宽度，双击恢复默认"
+                  onPointerDown={(event) => {
+                    event.preventDefault()
+                    setResizingInspector(true)
                   }}
-                  onApplyMermaid={(mermaid) => {
-                    try {
-                      visualCanvasRef.current?.loadMermaid(mermaid)
-                      showNotice('AI 结构正在转换为可视化画布')
-                    } catch (error) {
-                      showNotice(error instanceof Error ? error.message : '画布暂时无法接收 AI 结构')
-                    }
+                  onDoubleClick={() => updatePreferences({ inspectorWidth: 480 })}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                    event.preventDefault()
+                    const step = event.shiftKey ? 48 : 16
+                    const delta = event.key === 'ArrowLeft' ? step : -step
+                    updatePreferences({ inspectorWidth: clampInspectorWidth(preferences.inspectorWidth + delta) })
                   }}
-                  onClose={() => updatePreferences({ inspectorOpen: false })}
-                  onOpenSettings={() => setSettingsOpen(true)}
-                />
-              )}
+                ><span /></button>
+                {active.engine === 'mermaid' ? (
+                  <Inspector
+                    onInsert={(code) => editorRef.current?.insert(code)}
+                    onClose={() => updatePreferences({ inspectorOpen: false })}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                    renderError={renderError}
+                  />
+                ) : (
+                  <VisualInspector
+                    document={active}
+                    onApplyXml={(xml) => {
+                      try {
+                        visualCanvasRef.current?.loadXml(xml)
+                        showNotice('AI 修改正在应用到可视化画布')
+                      } catch (error) {
+                        showNotice(error instanceof Error ? error.message : '画布暂时无法接收 AI 修改')
+                      }
+                    }}
+                    onApplyMermaid={(mermaid) => {
+                      try {
+                        visualCanvasRef.current?.loadMermaid(mermaid)
+                        showNotice('AI 结构正在转换为可视化画布')
+                      } catch (error) {
+                        showNotice(error instanceof Error ? error.message : '画布暂时无法接收 AI 结构')
+                      }
+                    }}
+                    onClose={() => updatePreferences({ inspectorOpen: false })}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                  />
+                )}
+              </div>
             </>
           )}
         </div>
