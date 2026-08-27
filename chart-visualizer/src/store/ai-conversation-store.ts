@@ -6,6 +6,14 @@ export interface AiConversationMessage {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+  attachments?: AiConversationAttachment[]
+}
+
+export interface AiConversationAttachment {
+  kind: 'text' | 'image'
+  name: string
+  mimeType: string
+  preview?: string
 }
 
 export interface AiConversationThread {
@@ -48,7 +56,7 @@ interface AiConversationState {
   ensureThread: (projectId: string) => string
   createThread: (projectId: string) => string
   setActiveThread: (projectId: string, threadId: string) => void
-  appendMessage: (threadId: string, role: AiConversationMessage['role'], content: string) => void
+  appendMessage: (threadId: string, role: AiConversationMessage['role'], content: string, attachments?: AiConversationAttachment[]) => void
   deleteThread: (projectId: string, threadId: string) => void
 }
 
@@ -83,9 +91,22 @@ export const useAiConversationStore = create<AiConversationState>()(
           set((state) => ({ activeThreadByProject: { ...state.activeThreadByProject, [projectId]: threadId } }))
         }
       },
-      appendMessage: (threadId, role, rawContent) => {
+      appendMessage: (threadId, role, rawContent, rawAttachments = []) => {
         const content = rawContent.trim()
         if (!content) return
+        const attachments = rawAttachments.slice(0, 6).flatMap((item) => {
+          if (!item || (item.kind !== 'image' && item.kind !== 'text')) return []
+          const name = item.name?.trim().slice(0, 180)
+          const mimeType = item.mimeType?.trim().slice(0, 100)
+          if (!name || !mimeType) return []
+          const preview = item.kind === 'image'
+            && typeof item.preview === 'string'
+            && /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(item.preview)
+            && item.preview.length <= 200_000
+            ? item.preview
+            : undefined
+          return [{ kind: item.kind, name, mimeType, ...(preview ? { preview } : {}) } satisfies AiConversationAttachment]
+        })
         const timestamp = new Date().toISOString()
         set((state) => ({
           threads: state.threads.map((thread) => {
@@ -95,7 +116,13 @@ export const useAiConversationStore = create<AiConversationState>()(
               ...thread,
               title: firstUserMessage ? content.replace(/\s+/g, ' ').slice(0, 22) : thread.title,
               updatedAt: timestamp,
-              messages: [...thread.messages, { id: id('message'), role, content: content.slice(0, 4000), createdAt: timestamp }].slice(-120),
+              messages: [...thread.messages, {
+                id: id('message'),
+                role,
+                content: content.slice(0, 4000),
+                createdAt: timestamp,
+                ...(attachments.length ? { attachments } : {}),
+              }].slice(-120),
             }
           }),
         }))

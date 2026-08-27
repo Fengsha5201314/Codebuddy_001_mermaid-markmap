@@ -82,7 +82,10 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
       if (!bridge) return Promise.reject(new Error('可视化画布尚未连接。'))
       return bridge.exportDiagram(format, options)
     },
-    fit: () => bridgeRef.current?.invokeAction('fit', { border: 22, maxScale: 1 }),
+    fit: () => {
+      const bridge = bridgeRef.current
+      if (bridge?.state === 'ready') bridge.invokeAction('fit', { border: 22, maxScale: 1 })
+    },
     loadXml: (xml) => {
       const bridge = bridgeRef.current
       if (!bridge) throw new Error('可视化画布尚未连接。')

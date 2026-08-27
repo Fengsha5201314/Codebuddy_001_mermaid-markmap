@@ -146,7 +146,7 @@ export const DiagramEditor = forwardRef<DiagramEditorHandle, DiagramEditorProps>
         />
       </div>
       <footer className="editor-statusbar">
-        <span>Mermaid 11.16</span>
+        <span>Mermaid 11.17.2</span>
         <span>{active.code.split('\n').length} 行</span>
         <span>{active.code.length.toLocaleString()} 字符</span>
       </footer>

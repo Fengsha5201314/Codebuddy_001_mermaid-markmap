@@ -1,4 +1,8 @@
 import type { ExportOptions, RenderResult } from '@/types'
+import { estimateSvgTextWidth, wrapTextToPixelWidth } from '@/lib/mermaid-label-visibility'
+
+export const MAX_RASTER_DIMENSION = 32767
+export const MAX_RASTER_PIXELS = 100_000_000
 
 function safeFileName(name: string): string {
   return name.trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').replace(/\s+/g, ' ') || 'diagram'
@@ -104,10 +108,39 @@ function inlineComputedStyles(svg: SVGSVGElement): void {
   })
 }
 
+function foreignObjectTextLines(foreignObject: SVGForeignObjectElement): string[] {
+  const root = foreignObject.querySelector<HTMLElement>('.nodeLabel, .edgeLabel')
+    ?? foreignObject.firstElementChild
+    ?? foreignObject
+  const lines = ['']
+  const blocks = new Set(['div', 'p', 'li', 'section'])
+  const nextLine = () => {
+    if (lines[lines.length - 1].trim()) lines.push('')
+  }
+  const visit = (node: Node, isRoot = false) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      lines[lines.length - 1] += node.textContent ?? ''
+      return
+    }
+    if (!(node instanceof Element)) return
+    const name = node.localName.toLowerCase()
+    if (name === 'br') {
+      nextLine()
+      return
+    }
+    const block = !isRoot && blocks.has(name)
+    if (block) nextLine()
+    node.childNodes.forEach((child) => visit(child))
+    if (block) nextLine()
+  }
+  visit(root, true)
+  return lines.map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean)
+}
+
 function replaceForeignObjectsWithText(svg: SVGSVGElement): void {
-  svg.querySelectorAll('foreignObject').forEach((foreignObject) => {
-    const content = foreignObject.textContent?.replace(/\s+/g, ' ').trim() ?? ''
-    if (!content) {
+  svg.querySelectorAll<SVGForeignObjectElement>('foreignObject').forEach((foreignObject) => {
+    const lines = foreignObjectTextLines(foreignObject)
+    if (!lines.length) {
       foreignObject.remove()
       return
     }
@@ -117,22 +150,189 @@ function replaceForeignObjectsWithText(svg: SVGSVGElement): void {
     const height = Number.parseFloat(foreignObject.getAttribute('height') || '0') || 0
     const textSource = foreignObject.querySelector<HTMLElement>('.nodeLabel, .edgeLabel, span, div')
     const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
-    text.textContent = content
-    text.setAttribute('x', String(x + width / 2))
-    text.setAttribute('y', String(y + height / 2))
+    const centerX = x + width / 2
+    const computed = textSource ? window.getComputedStyle(textSource) : null
+    const parsedFontSize = Number.parseFloat(computed?.fontSize || '')
+    const fontSize = Number.isFinite(parsedFontSize) && parsedFontSize > 0 ? parsedFontSize : 14
+    const wrappedLines = lines
+    const parsedLineHeight = Number.parseFloat(computed?.lineHeight || '')
+    const lineHeight = Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+      ? parsedLineHeight
+      : Math.max(fontSize * 1.35, height / Math.max(1, wrappedLines.length))
+    const firstLineY = y + height / 2 - ((wrappedLines.length - 1) * lineHeight) / 2
+    text.setAttribute('x', String(centerX))
     text.setAttribute('text-anchor', 'middle')
-    text.setAttribute('dominant-baseline', 'central')
-    if (textSource) {
-      const computed = window.getComputedStyle(textSource)
+    text.setAttribute('xml:space', 'preserve')
+    // Mermaid color classes often stroke every direct SVG child. The preview
+    // label is HTML and does not inherit that stroke, but this native SVG text
+    // does unless we explicitly neutralize it. That made exports look bold.
+    text.setAttribute('stroke', 'none')
+    text.setAttribute('stroke-width', '0')
+    text.setAttribute('paint-order', 'normal')
+    if (computed) {
       const color = computed.color.trim()
-      if (color) text.setAttribute('fill', color)
+      text.setAttribute('fill', color && !/^(?:none|transparent|rgba\(0, 0, 0, 0\))$/i.test(color) ? color : '#172033')
       for (const property of ['font-family', 'font-size', 'font-style', 'font-weight'] as const) {
         const value = computed.getPropertyValue(property).trim()
         if (value) text.setAttribute(property, value)
       }
+    } else {
+      text.setAttribute('fill', '#172033')
+      text.setAttribute('font-size', `${fontSize}px`)
     }
+    const content = wrappedLines.join('')
+    if (/[\u3400-\u9fff]/u.test(content)) {
+      const family = text.getAttribute('font-family')
+      const cjkFallback = "'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif"
+      text.setAttribute('font-family', family ? `${family}, ${cjkFallback}` : cjkFallback)
+    }
+    wrappedLines.forEach((line, index) => {
+      const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan')
+      tspan.setAttribute('x', String(centerX))
+      tspan.setAttribute('y', String(firstLineY + index * lineHeight + fontSize * 0.35))
+      tspan.textContent = line
+      text.appendChild(tspan)
+    })
     foreignObject.replaceWith(text)
   })
+}
+
+function numericAttribute(element: Element | null, name: string): number {
+  const value = Number.parseFloat(element?.getAttribute(name) ?? '')
+  return Number.isFinite(value) ? value : 0
+}
+
+function nodeShapeSize(node: Element): { width: number; height: number } | null {
+  const rect = node.querySelector('.label-container[width], rect.label-container[width]')
+  const rectWidth = numericAttribute(rect, 'width')
+  const rectHeight = numericAttribute(rect, 'height')
+  if (rectWidth > 0 && rectHeight > 0) return { width: rectWidth, height: rectHeight }
+
+  const ellipse = node.querySelector('ellipse.label-container, ellipse')
+  const radiusX = numericAttribute(ellipse, 'rx')
+  const radiusY = numericAttribute(ellipse, 'ry')
+  if (radiusX > 0 && radiusY > 0) return { width: radiusX * 2, height: radiusY * 2 }
+
+  const polygon = node.querySelector('polygon.label-container, polygon')
+  const points = polygon?.getAttribute('points')?.trim().split(/\s+/).map((point) => point.split(',').map(Number))
+    .filter((point) => point.length === 2 && point.every(Number.isFinite))
+  if (points?.length) {
+    const xs = points.map(([x]) => x)
+    const ys = points.map(([, y]) => y)
+    return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) }
+  }
+  return null
+}
+
+/**
+ * Native Mermaid SVG labels can still exceed their shapes when a viewer does
+ * not reproduce Mermaid's browser-only text layout. Rewrap those labels as
+ * explicit tspans so the downloaded SVG remains readable everywhere.
+ */
+function wrapNativeNodeText(svg: SVGSVGElement): void {
+  svg.querySelectorAll('.node').forEach((node) => {
+    const shape = nodeShapeSize(node)
+    const text = node.querySelector<SVGTextElement>('text')
+    if (!shape || !text) return
+
+    const parsedFontSize = Number.parseFloat(text.getAttribute('font-size') ?? node.getAttribute('font-size') ?? '')
+    const originalFontSize = Number.isFinite(parsedFontSize) && parsedFontSize > 0 ? parsedFontSize : 16
+    const originalTspans = [...text.querySelectorAll<SVGTSpanElement>('tspan')]
+    const originalLines = originalTspans.length
+      ? originalTspans.map((tspan) => tspan.textContent ?? '')
+      : [text.textContent ?? '']
+    const maximumWidth = Math.max(24, shape.width - 24)
+    if (!originalLines.some((line) => estimateSvgTextWidth(line, originalFontSize) > maximumWidth)) return
+
+    const lines = originalLines.flatMap((line) => wrapTextToPixelWidth(line, originalFontSize, maximumWidth))
+    if (lines.length <= originalLines.length) return
+    const maximumFontSize = (shape.height - 8) / Math.max(1, lines.length * 1.15)
+    const fontSize = Math.max(10, Math.min(originalFontSize, maximumFontSize))
+    const lineHeight = fontSize * 1.15
+    const centerY = numericAttribute(text, 'y') || numericAttribute(originalTspans[0] ?? null, 'y')
+    const firstLineY = centerY - ((lines.length - 1) * lineHeight) / 2
+    const centerX = text.getAttribute('x') ?? originalTspans[0]?.getAttribute('x') ?? '0'
+    const template = originalTspans[0]
+
+    text.replaceChildren()
+    text.removeAttribute('y')
+    text.removeAttribute('dominant-baseline')
+    if (fontSize < originalFontSize) text.setAttribute('font-size', `${fontSize}px`)
+    lines.forEach((line, index) => {
+      const tspan = template
+        ? template.cloneNode(false) as SVGTSpanElement
+        : document.createElementNS('http://www.w3.org/2000/svg', 'tspan')
+      tspan.setAttribute('x', centerX)
+      tspan.setAttribute('y', String(firstLineY + index * lineHeight + fontSize * 0.35))
+      tspan.removeAttribute('dy')
+      tspan.removeAttribute('dominant-baseline')
+      tspan.textContent = line
+      text.appendChild(tspan)
+    })
+  })
+}
+
+export function getExportDimensions(result: RenderResult, padding: number): { width: number; height: number } {
+  // Mermaid SVG contains XHTML/CSS that is valid in the browser but can make
+  // strict XML DOMParser return <parsererror>. Read the root viewBox directly
+  // so a complex diagram never falls back to the preview viewport dimensions.
+  const rootTag = result.svg.match(/<svg\b[^>]*>/i)?.[0] ?? ''
+  const rawViewBox = rootTag.match(/\bviewBox\s*=\s*(["'])(.*?)\1/i)?.[2]
+  const viewBox = rawViewBox?.trim().split(/[ ,]+/).map(Number)
+  const sourceWidth = viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0
+    ? viewBox[2]
+    : result.width
+  const sourceHeight = viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[3] > 0
+    ? viewBox[3]
+    : result.height
+  return {
+    width: Math.max(1, sourceWidth + padding * 2),
+    height: Math.max(1, sourceHeight + padding * 2),
+  }
+}
+
+export function rasterDimensionsSupported(width: number, height: number, scale: number): boolean {
+  const outputWidth = Math.ceil(width * scale)
+  const outputHeight = Math.ceil(height * scale)
+  return outputWidth <= MAX_RASTER_DIMENSION
+    && outputHeight <= MAX_RASTER_DIMENSION
+    && outputWidth * outputHeight <= MAX_RASTER_PIXELS
+}
+
+export function recommendedRasterScale(width: number, height: number, targetLongEdge = 4800): number {
+  const longest = Math.max(1, width, height)
+  let scale = Math.min(4, Math.max(1, targetLongEdge / longest))
+  while (scale > 1 && !rasterDimensionsSupported(width, height, scale)) scale -= 0.05
+  return Math.max(1, Math.floor(scale * 100) / 100)
+}
+
+export function getSvgMarkupDimensions(svgMarkup: string): { width: number; height: number } {
+  const rootTag = svgMarkup.match(/<svg\b[^>]*>/i)?.[0] ?? ''
+  const rawViewBox = rootTag.match(/\bviewBox\s*=\s*(["'])(.*?)\1/i)?.[2]
+  const viewBox = rawViewBox?.trim().split(/[ ,]+/).map(Number)
+  if (viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0) {
+    return { width: viewBox[2], height: viewBox[3] }
+  }
+  const readLength = (name: string) => Number.parseFloat(rootTag.match(new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, 'i'))?.[2] ?? '')
+  const width = readLength('width')
+  const height = readLength('height')
+  if (width > 0 && height > 0) return { width, height }
+  throw new Error('SVG 缺少有效的画布尺寸，无法生成高清图片。')
+}
+
+export async function rasterizeSvgMarkup(
+  svgMarkup: string,
+  targetLongEdge = 4800,
+): Promise<{ blob: Blob; width: number; height: number; scale: number }> {
+  const source = getSvgMarkupDimensions(svgMarkup)
+  const scale = recommendedRasterScale(source.width, source.height, targetLongEdge)
+  const blob = await svgToRaster(svgMarkup, source.width, source.height, scale, 'png')
+  return {
+    blob,
+    width: Math.ceil(source.width * scale),
+    height: Math.ceil(source.height * scale),
+    scale,
+  }
 }
 
 export function prepareSvgForExport(
@@ -158,7 +358,10 @@ export function prepareSvgForExport(
     })
     try {
       inlineComputedStyles(svg)
-      if (rasterSafe) replaceForeignObjectsWithText(svg)
+      // SVG downloads must be as portable as raster exports. Many Windows,
+      // Office and document viewers ignore Mermaid's XHTML foreignObject text.
+      if (rasterSafe || svg.querySelector('foreignObject')) replaceForeignObjectsWithText(svg)
+      wrapNativeNodeText(svg)
     } finally {
       styleMirrors.forEach((style) => style.remove())
     }
@@ -208,7 +411,7 @@ async function svgToRaster(
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.ceil(width * scale))
     canvas.height = Math.max(1, Math.ceil(height * scale))
-    if (canvas.width > 32767 || canvas.height > 32767 || canvas.width * canvas.height > 100_000_000) {
+    if (!rasterDimensionsSupported(width, height, scale)) {
       throw new Error('图片尺寸超过浏览器限制，请降低清晰度或留白后重试。')
     }
     const context = canvas.getContext('2d')
@@ -246,8 +449,7 @@ export async function exportDiagram(
   const rasterFormat = options.format === 'png' || options.format === 'jpeg'
   const background = normalizeExportBackground(options.format, options.background)
   const svg = prepareSvgForExport(result, options.padding, background, rasterFormat)
-  const width = result.width + options.padding * 2
-  const height = result.height + options.padding * 2
+  const { width, height } = getExportDimensions(result, options.padding)
 
   if (options.format === 'svg') {
     downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), `${base}.svg`)

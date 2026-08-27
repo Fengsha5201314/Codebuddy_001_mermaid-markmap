@@ -130,6 +130,8 @@ export interface WorkspacePreferences {
   aiEnabledModels: Array<{
     provider: 'cpa' | 'deepseek' | 'custom'
     model: string
+    visionMode?: 'auto' | 'enabled' | 'disabled'
+    /** Legacy value retained for safe migration from v1.5.3 and earlier. */
     vision?: boolean
   }>
   aiSelectedModel: string

@@ -23,8 +23,29 @@ function partialJsonString(source: string, field: string): string {
   return value
 }
 
+function jsonValueStart(source: string, field: string): number {
+  const marker = source.indexOf(`"${field}"`)
+  if (marker < 0) return -1
+  const colon = source.indexOf(':', marker)
+  if (colon < 0) return -1
+  let index = colon + 1
+  while (/\s/.test(source[index] ?? '')) index += 1
+  return index
+}
+
 export function visualAiStreamPreview(source: string): string {
   const summary = partialJsonString(source, 'summary')
+  const codeStart = jsonValueStart(source, 'code')
+  if (codeStart >= 0 && source[codeStart] === '{') {
+    const plan = source.slice(codeStart)
+    const nodeCount = (plan.match(/"type"\s*:\s*"(?:start|end|process|decision|document|data|system|manual|note)"/g) ?? []).length
+    const edgeCount = (plan.match(/"source"\s*:/g) ?? []).length
+    const operationCount = (plan.match(/"op"\s*:/g) ?? []).length
+    const progress = operationCount
+      ? `已整理 ${operationCount} 项局部修改`
+      : `已整理 ${nodeCount} 个节点${edgeCount ? `、${edgeCount} 条连线` : ''}`
+    return `${summary || '正在生成专业图表结构'}\n\n正在生成结构化画布计划 · ${progress}`
+  }
   const code = partialJsonString(source, 'code')
   if (code) {
     if (code.trimStart().startsWith('<')) {

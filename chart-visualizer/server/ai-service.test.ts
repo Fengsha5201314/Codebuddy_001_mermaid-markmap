@@ -258,6 +258,37 @@ describe('AI service', () => {
     expect(user.currentMermaid).toBeUndefined()
   })
 
+  it('accepts a structured draw.io plan object without requiring nested JSON string escaping', async () => {
+    const plan = {
+      version: 1,
+      mode: 'replace',
+      title: '采购审批',
+      nodes: [{ id: 'start', type: 'start', label: '开始' }],
+      edges: [],
+    }
+    const fetchMock = vi.fn(async () => chatResponse({
+      action: 'generate',
+      summary: '已生成稳定的结构化计划。',
+      code: plan,
+      changes: ['创建采购审批骨架'],
+    }))
+
+    const result = await runAiRequest(config, {
+      ...payload,
+      action: 'generate',
+      diagramEngine: 'drawio',
+      code: '',
+    }, fetchMock as typeof fetch)
+
+    expect(JSON.parse(result.code)).toEqual(plan)
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    const system = request.messages.find((message) => message.role === 'system')?.content ?? ''
+    expect(system).toContain('绝对不要编写 mxGraph XML')
+    expect(system).toContain('"mode":"patch"')
+  })
+
   it('rejects unsafe draw.io XML returned by a model', async () => {
     const fetchMock = vi.fn(async () => chatResponse({
       summary: '已更新画布。',
@@ -294,6 +325,34 @@ describe('AI service', () => {
     expect(result.code).toBe('flowchart LR\n  A --> Review --> B')
     const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as { stream: boolean }
     expect(request.stream).toBe(true)
+  })
+
+  it('automatically repairs a structured response that was truncated before valid JSON completed', async () => {
+    const partial = '{"action":"edit","summary":"正在优化流程线条","code":{"version":1,"mode":"patch","operations":['
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: partial }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\ndata: [DONE]\n\n`
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } }))
+      .mockResolvedValueOnce(chatResponse({
+        action: 'edit',
+        summary: '已自动补全并优化流程线条。',
+        code: {
+          version: 1,
+          mode: 'patch',
+          operations: [{ op: 'updateNode', id: 'approve', label: '审批通过？' }],
+        },
+        changes: ['整理审批节点'],
+      }))
+
+    const result = await runAiRequestStream(config, {
+      ...payload,
+      action: 'auto',
+      diagramEngine: 'drawio',
+      code: '<mxfile><diagram><mxGraphModel><root><mxCell id="0" /><mxCell id="1" parent="0" /><mxCell id="approve" parent="1" vertex="1" value="审批" /></root></mxGraphModel></diagram></mxfile>',
+    }, () => undefined, fetchMock as typeof fetch)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.summary).toContain('自动补全')
+    expect(result.code).toContain('updateNode')
   })
 
   it('accepts a modest draw.io result when an OpenAI-compatible provider streams cumulative snapshots', async () => {

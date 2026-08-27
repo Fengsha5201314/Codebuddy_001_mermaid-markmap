@@ -16,4 +16,11 @@ describe('visual AI streaming preview', () => {
     expect(preview).toContain('正在生成 Mermaid 源码')
     expect(preview).toContain('A --> B')
   })
+
+  it('shows structural progress when visual AI returns an object plan', () => {
+    const preview = visualAiStreamPreview('{"summary":"生成采购流程","code":{"version":1,"mode":"replace","nodes":[{"id":"start","type":"start","label":"开始"},{"id":"approve","type":"decision","label":"审批？"}],"edges":[{"source":"start","target":"approve"}]')
+    expect(preview).toContain('正在生成结构化画布计划')
+    expect(preview).toContain('2 个节点、1 条连线')
+    expect(preview).not.toContain('Mermaid')
+  })
 })

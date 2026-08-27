@@ -10,6 +10,10 @@ import { createAiMiddleware, type AiServiceConfig } from './server/ai-service.ts
 
 const drawioRoot = fileURLToPath(new URL('./vendor/drawio', import.meta.url))
 
+function containsServerOnlyDrawioPath(value: string): boolean {
+  return value.split(/[\\/]+/).some((segment) => segment.toLowerCase() === 'web-inf')
+}
+
 const drawioMimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.gif': 'image/gif',
@@ -46,6 +50,11 @@ function drawioAssetsPlugin(): Plugin {
     } catch {
       response.statusCode = 400
       response.end('Bad Request')
+      return
+    }
+    if (containsServerOnlyDrawioPath(relativePath)) {
+      response.statusCode = 404
+      response.end('Not Found')
       return
     }
     const requestedPath = path.resolve(drawioRoot, relativePath)
@@ -88,7 +97,10 @@ function drawioAssetsPlugin(): Plugin {
     },
     async closeBundle() {
       if (!shouldCopyForBuild) return
-      await cp(drawioRoot, fileURLToPath(new URL('./dist/drawio', import.meta.url)), { recursive: true })
+      await cp(drawioRoot, fileURLToPath(new URL('./dist/drawio', import.meta.url)), {
+        recursive: true,
+        filter: (source) => !containsServerOnlyDrawioPath(path.relative(drawioRoot, source)),
+      })
     },
   }
 }

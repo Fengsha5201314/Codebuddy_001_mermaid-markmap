@@ -2,6 +2,25 @@ const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 const DEFAULT_TEXT_COLOR = '#333333'
 const DEFAULT_CJK_FONT_FALLBACK = "'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif"
+const ACTIVE_SVG_ELEMENTS = [
+  'script',
+  'iframe',
+  'object',
+  'embed',
+  'link',
+  'meta',
+  'base',
+  'audio',
+  'video',
+  'source',
+  'animate',
+  'animateMotion',
+  'animateTransform',
+  'set',
+  'discard',
+].join(',')
+const SAFE_RASTER_DATA_URL = /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\s]+$/i
+const UNSAFE_CSS = /@import|expression\s*\(|(?:javascript|vbscript)\s*:|behavior\s*:|-moz-binding\s*:/i
 
 function decodeSvgData(data: string): string {
   const match = data.match(/^data:image\/svg\+xml(?:;charset=[^;,]+)?(;base64)?,(.*)$/is)
@@ -114,6 +133,9 @@ function createNativeTextFallback(foreignObject: Element): SVGTextElement | unde
   text.setAttribute('fill', readCssProperty(style, 'color') ?? DEFAULT_TEXT_COLOR)
   text.setAttribute('font-size', fontSizeValue)
   text.setAttribute('font-family', readCssProperty(style, 'font-family') ?? DEFAULT_CJK_FONT_FALLBACK)
+  text.setAttribute('stroke', 'none')
+  text.setAttribute('stroke-width', '0')
+  text.setAttribute('paint-order', 'normal')
   const fontWeight = readCssProperty(style, 'font-weight')
   const fontStyle = readCssProperty(style, 'font-style')
   if (fontWeight) text.setAttribute('font-weight', fontWeight)
@@ -134,6 +156,50 @@ function copyContainerPresentation(container: Element, target: Element) {
     const value = container.getAttribute(attribute)
     if (value && !target.hasAttribute(attribute)) target.setAttribute(attribute, value)
   }
+}
+
+function isSafeCssValue(value: string): boolean {
+  if (UNSAFE_CSS.test(value)) return false
+  const urls = value.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)
+  return [...urls].every((match) => match[2].trim().startsWith('#'))
+}
+
+function sanitizeHref(element: Element, value: string): boolean {
+  const href = value.trim()
+  if (href.startsWith('#')) return true
+  const name = element.localName.toLowerCase()
+  if (name === 'image') return SAFE_RASTER_DATA_URL.test(href)
+  if (name !== 'a') return false
+  try {
+    const protocol = new URL(href).protocol.toLowerCase()
+    return protocol === 'https:' || protocol === 'http:' || protocol === 'mailto:'
+  } catch {
+    return false
+  }
+}
+
+function sanitizeSvg(svg: Element) {
+  svg.querySelectorAll(ACTIVE_SVG_ELEMENTS).forEach((element) => element.remove())
+  svg.querySelectorAll('style').forEach((element) => {
+    if (!isSafeCssValue(element.textContent ?? '')) element.remove()
+  })
+  ;[svg, ...Array.from(svg.querySelectorAll('*'))].forEach((element) => {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.localName.toLowerCase()
+      const qualifiedName = attribute.name.toLowerCase()
+      if (name.startsWith('on')) {
+        element.removeAttributeNode(attribute)
+        continue
+      }
+      if (name === 'href' || qualifiedName === 'xlink:href') {
+        if (!sanitizeHref(element, attribute.value)) element.removeAttributeNode(attribute)
+        continue
+      }
+      if ((name === 'style' || attribute.value.includes('url(')) && !isSafeCssValue(attribute.value)) {
+        element.removeAttributeNode(attribute)
+      }
+    }
+  })
 }
 
 function ensurePortableTextPaint(svg: Element) {
@@ -157,6 +223,17 @@ function ensurePortableTextPaint(svg: Element) {
         text.setAttribute('font-family', `${family}, 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif`)
       }
     }
+
+    // A draw.io fallback text can sit inside a group whose stroke belongs to
+    // the cell border. HTML preview labels do not inherit that SVG stroke.
+    const ownStroke = readCssProperty(style, 'stroke') ?? text.getAttribute('stroke')
+    if (!ownStroke || /^(?:inherit|currentColor)$/i.test(ownStroke)) {
+      text.setAttribute('stroke', 'none')
+      text.setAttribute('stroke-width', '0')
+      text.setAttribute('paint-order', 'normal')
+    }
+    const ownWeight = readCssProperty(style, 'font-weight') ?? text.getAttribute('font-weight')
+    if (!ownWeight) text.setAttribute('font-weight', '400')
   })
 }
 
@@ -240,6 +317,7 @@ export function makePortableDrawioSvg(data: string): string {
   })
   ensurePortableTextPaint(svg)
   addOpaqueWhiteBackground(svg as unknown as SVGSVGElement)
+  sanitizeSvg(svg)
 
   return new XMLSerializer().serializeToString(svg)
 }

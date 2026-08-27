@@ -25,6 +25,23 @@ describe('project AI conversations', () => {
     expect(useAiConversationStore.getState().threads.find((item) => item.id === second)?.messages).toEqual([])
   })
 
+  it('keeps sent screenshot metadata and a bounded preview in the conversation record', () => {
+    const threadId = useAiConversationStore.getState().ensureThread('project-1')
+    const attachments = [{
+      kind: 'image',
+      name: '剪贴板截图-20260826.png',
+      mimeType: 'image/png',
+      preview: 'data:image/webp;base64,dGlueQ==',
+    }]
+    const appendMessage = useAiConversationStore.getState().appendMessage as unknown as (...args: unknown[]) => void
+    appendMessage(threadId, 'user', '根据截图优化流程', attachments)
+
+    expect(useAiConversationStore.getState().threads.find((item) => item.id === threadId)?.messages[0]).toMatchObject({
+      content: '根据截图优化流程',
+      attachments,
+    })
+  })
+
   it('deletes a conversation without leaving the project without an active chat', () => {
     const threadId = useAiConversationStore.getState().ensureThread('project-1')
     useAiConversationStore.getState().deleteThread('project-1', threadId)

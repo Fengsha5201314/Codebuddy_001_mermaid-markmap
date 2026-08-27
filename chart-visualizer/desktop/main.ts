@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { createAiMiddleware } from '../server/ai-service.ts'
 import packageInfo from '../package.json' with { type: 'json' }
@@ -115,17 +116,34 @@ function registerUpdater() {
 }
 
 function registerIpc() {
-  ipcMain.handle('app:get-info', () => ({
+  const isTrustedSender = (event: IpcMainEvent | IpcMainInvokeEvent) => Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === event.sender.mainFrame,
+  )
+  const requireTrustedSender = (event: IpcMainEvent | IpcMainInvokeEvent) => {
+    if (!isTrustedSender(event)) throw new Error('Untrusted IPC sender.')
+  }
+
+  ipcMain.handle('app:get-info', (event) => {
+    requireTrustedSender(event)
+    return {
     desktop: true,
     packaged: app.isPackaged,
     name: APP_NAME,
     version: currentVersion(),
     platform: process.platform,
     releasesUrl: RELEASES_URL,
-  }))
+    }
+  })
 
-  ipcMain.handle('updates:get-state', () => updateState)
-  ipcMain.handle('updates:check', async () => {
+  ipcMain.handle('updates:get-state', (event) => {
+    requireTrustedSender(event)
+    return updateState
+  })
+  ipcMain.handle('updates:check', async (event) => {
+    requireTrustedSender(event)
     if (!app.isPackaged) {
       broadcastUpdateState({ status: 'development', message: '当前是开发预览版，正式安装包才会连接更新服务。' })
       return updateState
@@ -138,12 +156,15 @@ function registerIpc() {
     }
     return updateState
   })
-  ipcMain.handle('updates:install', () => {
+  ipcMain.handle('updates:install', (event) => {
+    requireTrustedSender(event)
     if (updateState.status !== 'downloaded') return false
     autoUpdater.quitAndInstall(false, true)
     return true
   })
-  ipcMain.handle('app:confirm-close', async (_event, hasUnsavedChanges: boolean) => {
+  ipcMain.handle('app:confirm-close', async (event, hasUnsavedChanges: boolean) => {
+    requireTrustedSender(event)
+    if (!closeRequestPending || typeof hasUnsavedChanges !== 'boolean') return 'cancel'
     if (!hasUnsavedChanges || !mainWindow || mainWindow.isDestroyed()) return 'save'
     const result = await dialog.showMessageBox(mainWindow, {
       type: 'question',
@@ -159,8 +180,8 @@ function registerIpc() {
     if (decision === 'cancel') closeRequestPending = false
     return decision
   })
-  ipcMain.on('app:close-now', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
+  ipcMain.on('app:close-now', (event) => {
+    if (!isTrustedSender(event) || !closeRequestPending || !mainWindow || mainWindow.isDestroyed()) return
     allowWindowClose = true
     closeRequestPending = false
     mainWindow.close()
@@ -185,6 +206,10 @@ async function serveStaticFile(request: IncomingMessage, response: ServerRespons
     relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html'
   } catch {
     sendServerError(response, 400, 'Bad Request')
+    return
+  }
+  if (relativePath.split(/[\\/]+/).some((segment) => segment.toLowerCase() === 'web-inf')) {
+    sendServerError(response, 404, 'Not Found')
     return
   }
   const root = path.resolve(staticRoot)

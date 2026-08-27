@@ -1,4 +1,5 @@
 import type { DiagramKind, DiagramTheme, RenderError, RenderResult } from '@/types'
+import { findClippedRenderedNodeLabelDetails, repairMermaidLabelVisibility } from '@/lib/mermaid-label-visibility'
 
 let renderSequence = 0
 let mermaidLoader: Promise<typeof import('mermaid')['default']> | null = null
@@ -61,6 +62,19 @@ function normalizeError(error: unknown): RenderError {
   }
 }
 
+function clippedLabelsFromSvg(svgMarkup: string) {
+  const staging = document.createElement('div')
+  staging.setAttribute('aria-hidden', 'true')
+  staging.style.cssText = 'position:fixed;left:-100000px;top:0;opacity:0;pointer-events:none;'
+  staging.innerHTML = svgMarkup
+  document.body.appendChild(staging)
+  try {
+    return findClippedRenderedNodeLabelDetails(staging)
+  } finally {
+    staging.remove()
+  }
+}
+
 export async function renderDiagram(code: string, theme: DiagramTheme): Promise<RenderResult> {
   if (!code.trim()) {
     throw { message: '请输入 Mermaid 图表代码。', raw: 'Empty diagram source' } satisfies RenderError
@@ -70,6 +84,7 @@ export async function renderDiagram(code: string, theme: DiagramTheme): Promise<
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
+    htmlLabels: true,
     suppressErrorRendering: true,
     theme: theme.mermaidTheme,
     fontFamily: '"Aptos", "Noto Sans SC", "Microsoft YaHei", sans-serif',
@@ -104,7 +119,6 @@ export async function renderDiagram(code: string, theme: DiagramTheme): Promise<
       labelTextColor: theme.text,
     },
     flowchart: {
-      htmlLabels: false,
       curve: 'basis',
       padding: 18,
     },
@@ -118,8 +132,22 @@ export async function renderDiagram(code: string, theme: DiagramTheme): Promise<
 
   try {
     await mermaid.parse(code)
-    const id = `diagram-${Date.now()}-${renderSequence++}`
-    const { svg } = await mermaid.render(id, code)
+    let renderCode = code
+    let svg = ''
+    // Mermaid lays out HTML labels before the browser has applied its final
+    // Chinese font metrics. Compile, measure the real foreignObject viewport,
+    // then recompile with deterministic line breaks. This keeps user source
+    // untouched while preview, SVG and raster exports share one safe geometry.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const id = `diagram-${Date.now()}-${renderSequence++}`
+      ;({ svg } = await mermaid.render(id, renderCode))
+      if (detectDiagramKind(code) !== 'flowchart') break
+      const clipped = clippedLabelsFromSvg(svg)
+      if (!clipped.length) break
+      const repaired = repairMermaidLabelVisibility(renderCode, clipped)
+      if (!repaired.changedLabels) break
+      renderCode = repaired.code
+    }
     const dimensions = dimensionsFromSvg(svg)
     return { svg, ...dimensions, kind: detectDiagramKind(code) }
   } catch (error) {

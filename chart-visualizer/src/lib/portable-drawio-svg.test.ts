@@ -61,4 +61,20 @@ describe('portable draw.io SVG', () => {
     expect(result).toContain('fill="#17406d"')
     expect(result).toContain('font-size="14px"')
   })
+
+  it('prevents a draw.io container stroke from turning normal HTML labels bold', () => {
+    const result = makePortableDrawioSvg(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+      <g style="stroke:#009966;stroke-width:2">
+        <foreignObject x="0" y="0" width="160" height="50">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="font-size:14px;font-weight:400;color:#006644">预览中的正常细体</div>
+        </foreignObject>
+      </g>
+    </svg>`)
+    const document = new DOMParser().parseFromString(result, 'image/svg+xml')
+    const text = document.querySelector('text')
+
+    expect(text?.getAttribute('font-weight')).toBe('400')
+    expect(text?.getAttribute('stroke')).toBe('none')
+    expect(text?.getAttribute('stroke-width')).toBe('0')
+  })
 })

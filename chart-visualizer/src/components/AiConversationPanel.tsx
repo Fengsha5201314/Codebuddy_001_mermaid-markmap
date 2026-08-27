@@ -113,7 +113,21 @@ export function AiConversationPanel({
         {messages.map((message) => (
           <article key={message.id} className={message.role}>
             <strong>{message.role === 'user' ? '你' : 'AI'}</strong>
-            <p>{message.content}</p>
+            <div className="ai-message-content">
+              <p>{message.content}</p>
+              {message.attachments?.length ? (
+                <div className="ai-message-attachments" aria-label="本条消息的附件">
+                  {message.attachments.map((attachment, index) => (
+                    <span key={`${attachment.name}-${index}`} title={attachment.name}>
+                      {attachment.kind === 'image' && attachment.preview
+                        ? <img src={attachment.preview} alt={attachment.name} />
+                        : <i aria-hidden="true">{attachment.kind === 'image' ? '图' : '文'}</i>}
+                      <b>{attachment.name}</b>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </article>
         ))}
 

@@ -10,16 +10,17 @@ type AiRequestRunner = (
   signal?: AbortSignal,
 ) => Promise<AiResponse>
 
-interface MermaidAiWorkflowOptions {
+interface AiDiagramWorkflowOptions {
   payload: AiRequest
   request: AiRequestRunner
+  prepare?: (code: string, response: AiResponse) => string | Promise<string>
   validate: (code: string) => Promise<unknown>
   onDelta?: (text: string) => void
   onStage?: (stage: AiWorkflowStage) => void
   signal?: AbortSignal
 }
 
-export interface MermaidAiWorkflowResult {
+export interface AiDiagramWorkflowResult {
   response: AiResponse
   validationError: string | null
   repairAttempts: number
@@ -46,11 +47,11 @@ function localizedValidationMessage(message: string): string {
   return `第 ${line} 行附近存在语法问题${detail ? `：${detail}` : '。'}`
 }
 
-function mergeRepairResponse(originalAction: AiResponse['action'], first: AiResponse, repaired: AiResponse): AiResponse {
+function mergeRepairResponse(originalAction: AiResponse['action'], first: AiResponse, repaired: AiResponse, formatName: string): AiResponse {
   return {
     ...repaired,
     action: originalAction,
-    summary: `已按要求处理，并自动修复了生成结果中的 Mermaid 问题。${repaired.summary}`,
+    summary: `已按要求处理，并自动修复了生成结果中的 ${formatName}问题。${repaired.summary}`,
     changes: [...new Set([...first.changes, ...repaired.changes])].slice(0, 6),
   }
 }
@@ -58,21 +59,24 @@ function mergeRepairResponse(originalAction: AiResponse['action'], first: AiResp
 export async function runAiDiagramWorkflow({
   payload,
   request,
+  prepare,
   validate,
   onDelta,
   onStage,
   signal,
-}: MermaidAiWorkflowOptions): Promise<MermaidAiWorkflowResult> {
-  const formatName = payload.diagramEngine === 'drawio' ? 'draw.io XML' : 'Mermaid'
+}: AiDiagramWorkflowOptions): Promise<AiDiagramWorkflowResult> {
+  const formatName = payload.diagramEngine === 'drawio' ? 'draw.io 结构化计划' : 'Mermaid'
   onStage?.('generating')
-  const first = await request(payload, onDelta, signal)
-  if (first.action === 'explain') {
+  const firstRaw = await request(payload, onDelta, signal)
+  if (firstRaw.action === 'explain') {
     onStage?.('ready')
-    return { response: first, validationError: null, repairAttempts: 0 }
+    return { response: firstRaw, validationError: null, repairAttempts: 0 }
   }
 
   onStage?.('validating')
+  let first = firstRaw
   try {
+    if (prepare) first = { ...firstRaw, code: await prepare(firstRaw.code, firstRaw) }
     await validate(first.code)
     onStage?.('ready')
     return { response: first, validationError: null, repairAttempts: 0 }
@@ -84,14 +88,14 @@ export async function runAiDiagramWorkflow({
       repaired = await request({
         ...payload,
         action: 'fix',
-        prompt: `自动修复刚才生成的候选图，只修复 ${formatName} 语法和结构，不改变原始需求：${payload.prompt || '保持当前业务语义'}`,
-        code: first.code,
+        prompt: `自动修复刚才生成的候选图，只修复 ${formatName} 语法和结构，不改变原始需求。错误详情：${firstError}。原始需求：${payload.prompt || '保持当前业务语义'}`,
+        code: firstRaw.code,
         renderError: firstError,
       }, onDelta, signal)
     } catch (repairRequestError) {
       onStage?.('failed')
       return {
-        response: first,
+        response: firstRaw,
         validationError: `候选图无法渲染，自动修复请求也未完成：${validationMessage(repairRequestError)}`,
         repairAttempts: 1,
       }
@@ -99,17 +103,18 @@ export async function runAiDiagramWorkflow({
 
     onStage?.('validating')
     try {
+      if (prepare) repaired = { ...repaired, code: await prepare(repaired.code, repaired) }
       await validate(repaired.code)
       onStage?.('ready')
       return {
-        response: mergeRepairResponse(first.action, first, repaired),
+        response: mergeRepairResponse(firstRaw.action, firstRaw, repaired, formatName),
         validationError: null,
         repairAttempts: 1,
       }
     } catch (repairError) {
       onStage?.('failed')
       return {
-        response: mergeRepairResponse(first.action, first, repaired),
+        response: mergeRepairResponse(firstRaw.action, firstRaw, repaired, formatName),
         validationError: `自动修复后仍无法通过结构检查：${localizedValidationMessage(validationMessage(repairError))}`,
         repairAttempts: 1,
       }

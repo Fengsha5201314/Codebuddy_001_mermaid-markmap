@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, Download, FileCode2, FileImage, FileText, LoaderCircle } from 'lucide-react'
-import { copyMarkdown, copySvg, exportDiagram, normalizeExportBackground } from '@/lib/export'
+import {
+  copyMarkdown,
+  copySvg,
+  exportDiagram,
+  getExportDimensions,
+  normalizeExportBackground,
+  rasterDimensionsSupported,
+  recommendedRasterScale,
+} from '@/lib/export'
 import type { ExportOptions, RenderResult } from '@/types'
 import { Modal } from './Modal'
 
@@ -22,7 +30,7 @@ const formats: Array<{ id: ExportOptions['format']; label: string; hint: string;
 
 export function ExportDialog({ open, title, code, result, onClose }: ExportDialogProps) {
   const [format, setFormat] = useState<ExportOptions['format']>('png')
-  const [scale, setScale] = useState(2)
+  const [scale, setScale] = useState(0)
   const [padding, setPadding] = useState(32)
   const [background, setBackground] = useState<string>('white')
   const [exporting, setExporting] = useState(false)
@@ -36,8 +44,17 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
     }
   }, [open])
   const requiresRender = !['mmd', 'markdown'].includes(format)
+  const rasterFormat = format === 'png' || format === 'jpeg'
   const effectiveBackground = normalizeExportBackground(format, background)
-  const estimated = useMemo(() => result ? `${Math.round((result.width + padding * 2) * scale)} × ${Math.round((result.height + padding * 2) * scale)} px` : '等待有效预览', [padding, result, scale])
+  const baseDimensions = useMemo(() => result ? getExportDimensions(result, padding) : null, [padding, result])
+  const smartScale = baseDimensions ? recommendedRasterScale(baseDimensions.width, baseDimensions.height) : 1
+  const outputScale = rasterFormat ? (scale === 0 ? smartScale : scale) : 1
+  const outputWidth = baseDimensions ? Math.ceil(baseDimensions.width * outputScale) : 0
+  const outputHeight = baseDimensions ? Math.ceil(baseDimensions.height * outputScale) : 0
+  const rasterSupported = !rasterFormat || !baseDimensions || rasterDimensionsSupported(baseDimensions.width, baseDimensions.height, outputScale)
+  const estimated = baseDimensions
+    ? `${outputWidth} × ${outputHeight} px${rasterFormat ? ` · ${(outputWidth * outputHeight / 1_000_000).toFixed(1)} MP` : ' · 矢量'}`
+    : '等待有效预览'
 
   const handleExport = async () => {
     if (!result && requiresRender) return
@@ -47,7 +64,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
       await exportDiagram(result ?? { svg: '', width: 0, height: 0, kind: 'other' }, code, {
         format,
         fileName: title,
-        scale,
+        scale: outputScale,
         padding,
         background: effectiveBackground,
       })
@@ -72,7 +89,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="导出正式成果" description="按交付场景选择格式，图片默认使用 2× 高清输出。" size="large">
+    <Modal open={open} onClose={onClose} title="导出正式成果" description="按交付场景选择格式，PNG 默认按约 4800px 长边智能高清输出。" size="large">
       <div className="export-layout">
         <div className="export-settings">
           <h3>1. 选择格式</h3>
@@ -87,7 +104,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
             <>
               <h3>2. 输出质量</h3>
               <div className="export-control-row">
-                <label><span>清晰度</span><select value={scale} onChange={(event) => setScale(Number(event.target.value))}><option value={1}>1× 标准</option><option value={2}>2× 高清</option><option value={3}>3× 超清</option><option value={4}>4× 印刷</option></select></label>
+                {rasterFormat && <label><span>清晰度（按完整画布）</span><select value={scale} onChange={(event) => setScale(Number(event.target.value))}><option value={0}>智能高清 · 长边约 4800px</option>{[1, 2, 3, 4].map((value) => <option key={value} value={value} disabled={Boolean(baseDimensions && !rasterDimensionsSupported(baseDimensions.width, baseDimensions.height, value))}>{value}× {value === 1 ? '标准' : value === 2 ? '高清' : value === 3 ? '超清' : '印刷'}</option>)}</select></label>}
                 <label><span>留白</span><select value={padding} onChange={(event) => setPadding(Number(event.target.value))}><option value={0}>无</option><option value={16}>紧凑</option><option value={32}>标准</option><option value={64}>宽松</option></select></label>
               </div>
               <div className="background-options">
@@ -95,6 +112,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
                 {['white', '#f7f8fa', 'transparent'].map((color) => <button key={color} className={background === color ? 'active' : ''} onClick={() => setBackground(color)} disabled={format === 'jpeg' && color === 'transparent'} title={format === 'jpeg' && color === 'transparent' ? 'JPG 不支持透明背景' : undefined}><i style={{ background: color === 'transparent' ? 'repeating-conic-gradient(#ddd 0 25%, white 0 50%) 0 / 10px 10px' : color }} />{color === 'white' ? '白色' : color === 'transparent' ? '透明' : '浅灰'}</button>)}
               </div>
               {format === 'jpeg' && background === 'transparent' && <p className="export-inline-note">JPG 不支持透明通道，本次将自动使用白色背景。</p>}
+              {rasterFormat && !rasterSupported && <p className="export-inline-note">当前档位超过安全像素上限，请选择可用的较低档位；完整 SVG 画布不会被裁切或缩回预览尺寸。</p>}
             </>
           )}
         </div>
@@ -108,7 +126,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
             {requiresRender && <div><dt>预计尺寸</dt><dd>{estimated}</dd></div>}
             <div><dt>数据范围</dt><dd>仅当前图表</dd></div>
           </dl>
-          <button className="export-primary" onClick={handleExport} disabled={exporting || (requiresRender && !result)}>
+          <button className="export-primary" onClick={handleExport} disabled={exporting || (requiresRender && !result) || !rasterSupported}>
             {exporting ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}
             {exporting ? '正在生成…' : `下载 ${format.toUpperCase()}`}
           </button>

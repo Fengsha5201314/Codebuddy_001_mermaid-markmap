@@ -13,6 +13,17 @@ export interface WorkspaceBackup {
 export const EMPTY_DRAWIO_XML = '<mxfile host="embedded"><diagram id="page-1" name="Page-1"><mxGraphModel grid="1" gridSize="10" guides="1" connect="1" arrows="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>'
 
 const themeIds = new Set<DiagramThemeId>(['paper', 'blueprint', 'executive', 'forest', 'midnight'])
+export const MAX_WORKSPACE_DOCUMENTS = 500
+export const MAX_WORKSPACE_PROJECTS = 500
+const MAX_IDENTIFIER_LENGTH = 160
+const MAX_TITLE_LENGTH = 240
+const MAX_DESCRIPTION_LENGTH = 4_000
+const MAX_TAGS = 50
+const MAX_TAG_LENGTH = 80
+
+function boundedText(value: unknown, maximum: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, maximum) : ''
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -23,8 +34,9 @@ function validDate(value: unknown, fallback: string): string {
 }
 
 function uniqueId(candidate: unknown, prefix: string, used: Set<string>): string {
-  const base = typeof candidate === 'string' && candidate.trim()
-    ? candidate.trim()
+  const normalized = boundedText(candidate, MAX_IDENTIFIER_LENGTH)
+  const base = normalized
+    ? normalized
     : `${prefix}-${Date.now().toString(36)}`
   let value = base
   let suffix = 2
@@ -49,8 +61,9 @@ function normalizeVersions(value: unknown, documentEngine: DiagramEngine): Diagr
     const sourceMermaid = typeof item.sourceMermaid === 'string'
       ? item.sourceMermaid
       : (engine === 'drawio' && typeof item.code === 'string' && item.code.trim() ? item.code : undefined)
-    const sourceDocumentId = typeof item.sourceDocumentId === 'string' && item.sourceDocumentId.trim()
-      ? item.sourceDocumentId.trim()
+    const sourceDocumentIdValue = boundedText(item.sourceDocumentId, MAX_IDENTIFIER_LENGTH)
+    const sourceDocumentId = sourceDocumentIdValue
+      ? sourceDocumentIdValue
       : undefined
     const drawioXml = typeof item.drawioXml === 'string' && item.drawioXml.trim()
       ? item.drawioXml
@@ -67,7 +80,7 @@ function normalizeVersions(value: unknown, documentEngine: DiagramEngine): Diagr
         ...(sourceDocumentId !== undefined ? { sourceDocumentId } : {}),
       } : {}),
       createdAt: validDate(item.createdAt, fallbackDate),
-      label: typeof item.label === 'string' && item.label.trim() ? item.label.trim() : `导入版本 ${index + 1}`,
+      label: boundedText(item.label, MAX_TITLE_LENGTH) || `导入版本 ${index + 1}`,
     }]
   }).slice(0, 30)
 }
@@ -77,7 +90,7 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
   const used = new Set<string>()
   const fallbackDate = new Date().toISOString()
 
-  return value.flatMap((item, index) => {
+  return value.slice(0, MAX_WORKSPACE_DOCUMENTS).flatMap((item, index) => {
     if (!isRecord(item)) return []
     const engine = inferEngine(item)
     const drawioXml = typeof item.drawioXml === 'string' && item.drawioXml.trim()
@@ -86,8 +99,9 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
     const sourceMermaid = typeof item.sourceMermaid === 'string'
       ? item.sourceMermaid
       : (engine === 'drawio' && typeof item.code === 'string' && item.code.trim() ? item.code : undefined)
-    const sourceDocumentId = typeof item.sourceDocumentId === 'string' && item.sourceDocumentId.trim()
-      ? item.sourceDocumentId.trim()
+    const sourceDocumentIdValue = boundedText(item.sourceDocumentId, MAX_IDENTIFIER_LENGTH)
+    const sourceDocumentId = sourceDocumentIdValue
+      ? sourceDocumentIdValue
       : undefined
     if (engine === 'mermaid' && typeof item.code !== 'string') return []
     if (engine === 'drawio' && !drawioXml) return []
@@ -101,11 +115,13 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
       : 'paper'
 
     const documentId = uniqueId(item.id, 'diagram', used)
-    const projectId = typeof item.projectId === 'string' && item.projectId.trim()
-      ? item.projectId.trim()
+    const projectIdValue = boundedText(item.projectId, MAX_IDENTIFIER_LENGTH)
+    const projectId = projectIdValue
+      ? projectIdValue
       : `project-${sourceDocumentId ?? documentId}`
-    const parentDocumentId = typeof item.parentDocumentId === 'string' && item.parentDocumentId.trim()
-      ? item.parentDocumentId.trim()
+    const parentDocumentIdValue = boundedText(item.parentDocumentId, MAX_IDENTIFIER_LENGTH)
+    const parentDocumentId = parentDocumentIdValue
+      ? parentDocumentIdValue
       : undefined
 
     return [{
@@ -113,8 +129,8 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
       projectId,
       ...(parentDocumentId ? { parentDocumentId } : {}),
       order: typeof item.order === 'number' && Number.isFinite(item.order) ? item.order : index,
-      title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : `导入图表 ${index + 1}`,
-      description: typeof item.description === 'string' ? item.description : '',
+      title: boundedText(item.title, MAX_TITLE_LENGTH) || `导入图表 ${index + 1}`,
+      description: boundedText(item.description, MAX_DESCRIPTION_LENGTH),
       engine,
       code,
       ...(engine === 'drawio' ? {
@@ -126,7 +142,10 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
       themeId,
       favorite: item.favorite === true,
       tags: Array.isArray(item.tags)
-        ? [...new Set(item.tags.filter((tag): tag is string => typeof tag === 'string').map((tag) => tag.trim()).filter(Boolean))]
+        ? [...new Set(item.tags
+          .filter((tag): tag is string => typeof tag === 'string')
+          .map((tag) => boundedText(tag, MAX_TAG_LENGTH))
+          .filter(Boolean))].slice(0, MAX_TAGS)
         : [],
       createdAt,
       updatedAt,
@@ -137,23 +156,35 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
 
 export function normalizeWorkspaceProjects(value: unknown, documents: DiagramDocument[]): DiagramProject[] {
   const fallbackDate = new Date().toISOString()
-  const provided = Array.isArray(value) ? value : []
+  const provided = Array.isArray(value) ? value.slice(0, MAX_WORKSPACE_PROJECTS) : []
+  const boundedDocuments = documents.slice(0, MAX_WORKSPACE_DOCUMENTS)
+  const requiredProjectIds = new Set(boundedDocuments.map((document) => document.projectId))
   const byId = new Map<string, DiagramProject>()
-  for (const item of provided) {
-    if (!isRecord(item) || typeof item.id !== 'string' || !item.id.trim()) continue
-    const id = item.id.trim()
-    if (byId.has(id)) continue
+  const addProvidedProject = (item: unknown) => {
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id.trim()) return
+    const id = boundedText(item.id, MAX_IDENTIFIER_LENGTH)
+    if (!id || byId.has(id) || byId.size >= MAX_WORKSPACE_PROJECTS) return
     byId.set(id, {
       id,
-      title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : '未命名项目',
-      description: typeof item.description === 'string' ? item.description : '',
+      title: boundedText(item.title, MAX_TITLE_LENGTH) || '未命名项目',
+      description: boundedText(item.description, MAX_DESCRIPTION_LENGTH),
       createdAt: validDate(item.createdAt, fallbackDate),
       updatedAt: validDate(item.updatedAt, fallbackDate),
     })
   }
-  for (const document of documents) {
+  for (const item of provided) {
+    if (isRecord(item) && requiredProjectIds.has(boundedText(item.id, MAX_IDENTIFIER_LENGTH))) addProvidedProject(item)
+  }
+  const canonicalByProject = new Map<string, DiagramDocument>()
+  for (const document of boundedDocuments) {
+    if (!document.sourceDocumentId && !canonicalByProject.has(document.projectId)) {
+      canonicalByProject.set(document.projectId, document)
+    }
+  }
+  for (const document of boundedDocuments) {
     if (byId.has(document.projectId)) continue
-    const canonical = documents.find((item) => item.projectId === document.projectId && !item.sourceDocumentId)
+    if (byId.size >= MAX_WORKSPACE_PROJECTS) break
+    const canonical = canonicalByProject.get(document.projectId)
     byId.set(document.projectId, {
       id: document.projectId,
       title: canonical?.title || document.title || '未命名项目',
@@ -162,6 +193,7 @@ export function normalizeWorkspaceProjects(value: unknown, documents: DiagramDoc
       updatedAt: canonical?.updatedAt || document.updatedAt,
     })
   }
+  for (const item of provided) addProvidedProject(item)
   return [...byId.values()]
 }
 
@@ -190,6 +222,12 @@ export function parseWorkspaceBackup(text: string): WorkspaceBackup {
   }
   if (!Array.isArray(parsed.documents)) {
     throw new Error('备份文件缺少图表数据。')
+  }
+  if (parsed.documents.length > MAX_WORKSPACE_DOCUMENTS) {
+    throw new Error(`备份中的图表数量超过 ${MAX_WORKSPACE_DOCUMENTS} 个，请拆分后再导入。`)
+  }
+  if (Array.isArray(parsed.projects) && parsed.projects.length > MAX_WORKSPACE_PROJECTS) {
+    throw new Error(`备份中的项目数量超过 ${MAX_WORKSPACE_PROJECTS} 个，请拆分后再导入。`)
   }
 
   const documents = normalizeWorkspaceDocuments(parsed.documents)

@@ -23,18 +23,31 @@ import {
   type AiStatus,
 } from '@/lib/ai-contract'
 import { AiApiError, getAiStatus, requestAiChangeStream } from '@/lib/ai-client'
-import { runAiDiagramWorkflow, type AiWorkflowStage } from '@/lib/ai-diagram-workflow'
+import { runAiDiagramWorkflow } from '@/lib/ai-diagram-workflow'
 import { appendAiPrompt, type AiPromptTemplate } from '@/lib/ai-prompt-templates'
 import { visualAiStreamPreview } from '@/lib/ai-stream-preview'
+import { compileAiDrawioCode } from '@/lib/ai-drawio-plan'
+import { appendAiAttachmentFiles, buildConversationAttachments, imageFilesFromClipboard } from '@/lib/ai-attachments'
 import { validateDrawioXml } from '@/lib/drawio-xml'
 import { EMPTY_DRAWIO_XML } from '@/lib/workspace-data'
 import { useWorkspaceStore } from '@/store/workspace-store'
 import { usePromptTemplateStore } from '@/store/prompt-template-store'
 import { buildAiConversationContext, useAiConversationStore } from '@/store/ai-conversation-store'
+import {
+  aiTaskKey,
+  appendAiTaskDelta,
+  beginAiTask,
+  finishAiTask,
+  patchAiTask,
+  setAiTaskStage,
+  stopAiTask,
+  useAiTaskStore,
+} from '@/store/ai-task-store'
 import type { AiAttachment } from '@/lib/ai-contract'
 import type { DiagramDocument } from '@/types'
 import { AiAttachmentPicker } from '@/components/AiAttachmentPicker'
 import { AiConversationPanel, AiTemplateMenu } from '@/components/AiConversationPanel'
+import { modelSupportsVision } from '@/lib/provider-settings'
 
 interface VisualAiAssistantProps {
   document: DiagramDocument
@@ -84,21 +97,20 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const setActiveThread = useAiConversationStore((state) => state.setActiveThread)
   const appendMessage = useAiConversationStore((state) => state.appendMessage)
   const deleteThread = useAiConversationStore((state) => state.deleteThread)
-  const controllerRef = useRef<AbortController | null>(null)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
-  const streamBufferRef = useRef('')
-  const streamFrameRef = useRef(0)
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
-  const [running, setRunning] = useState(false)
-  const [streamText, setStreamText] = useState('')
-  const [workflowStage, setWorkflowStage] = useState<AiWorkflowStage | null>(null)
-  const [candidate, setCandidate] = useState<VisualCandidate | null>(null)
-  const [candidateStale, setCandidateStale] = useState(false)
-  const [requestError, setRequestError] = useState<string | null>(null)
-  const [applied, setApplied] = useState(false)
   const [attachments, setAttachments] = useState<AiAttachment[]>([])
+  const taskKey = aiTaskKey('drawio', document.id)
+  const task = useAiTaskStore((state) => state.tasks[taskKey])
+  const running = task?.running ?? false
+  const streamText = task?.streamText ?? ''
+  const workflowStage = task?.workflowStage ?? null
+  const candidate = (task?.candidate as VisualCandidate | null | undefined) ?? null
+  const candidateStale = task?.candidateStale ?? false
+  const requestError = task?.requestError ?? null
+  const applied = task?.applied ?? false
   const projectThreads = threads.filter((thread) => thread.projectId === document.projectId)
   const activeThreadId = activeThreadByProject[document.projectId]
   const activeThread = projectThreads.find((thread) => thread.id === activeThreadId)
@@ -123,19 +135,11 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
     window.addEventListener('ai-settings-updated', onSettingsUpdated)
     return () => {
       window.removeEventListener('ai-settings-updated', onSettingsUpdated)
-      controllerRef.current?.abort()
-      window.cancelAnimationFrame(streamFrameRef.current)
     }
   }, [])
 
   useEffect(() => {
-    controllerRef.current?.abort()
     setPrompt('')
-    setCandidate(null)
-    setCandidateStale(false)
-    setRequestError(null)
-    setApplied(false)
-    setWorkflowStage(null)
     setAttachments([])
   }, [document.id])
 
@@ -150,7 +154,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const selectedModelPreference = selectedModel
     ? preferences.aiEnabledModels.find((item) => aiModelKey(item) === preferences.aiSelectedModel)
     : undefined
-  const supportsVision = Boolean(selectedModel && selectedModel.provider !== 'deepseek' && selectedModelPreference?.vision)
+  const supportsVision = modelSupportsVision(selectedModel, selectedModelPreference)
   const hasUnsupportedImage = attachments.some((item) => item.kind === 'image') && !supportsVision
   const selectedProvider = selectedModel
     ? status?.providers.find((provider) => provider.id === selectedModel.provider)
@@ -165,7 +169,13 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
 
   const run = async (
     phase: 'discuss' | 'generate' = 'generate',
-    options?: { prompt?: string; appendUser?: boolean },
+    options?: {
+      prompt?: string
+      appendUser?: boolean
+      action?: 'auto' | 'fix'
+      requestCode?: string
+      compileBaseXml?: string
+    },
   ) => {
     const requestedPrompt = options?.prompt ?? prompt.trim()
     const requestReady = Boolean(selectedModel && selectedProvider?.configured && !running && requestedPrompt.trim() && !hasUnsupportedImage)
@@ -173,27 +183,14 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
     const threadId = activeThread?.id ?? createThread(document.projectId)
     const userPrompt = requestedPrompt.trim()
     const conversation = buildAiConversationContext(activeThread?.messages ?? [])
+    const submittedAttachments = attachments
     if (options?.appendUser !== false) {
-      appendMessage(threadId, 'user', userPrompt)
+      appendMessage(threadId, 'user', userPrompt, await buildConversationAttachments(submittedAttachments))
       setPrompt('')
       setAttachments([])
     }
-    controllerRef.current?.abort()
-    const controller = new AbortController()
-    controllerRef.current = controller
-    setRunning(true)
     const preserveCandidate = phase === 'discuss' && Boolean(candidate)
-    if (!preserveCandidate) {
-      setCandidate(null)
-      setCandidateStale(false)
-    } else {
-      setCandidateStale(true)
-    }
-    setRequestError(null)
-    setApplied(false)
-    setStreamText('')
-    setWorkflowStage(null)
-    streamBufferRef.current = ''
+    const controller = beginAiTask(taskKey, 'drawio', document.id, preserveCandidate)
 
     const documentXml = document.drawioXml && document.drawioXml !== EMPTY_DRAWIO_XML ? document.drawioXml : ''
     const canBuildOnCandidate = phase === 'generate'
@@ -203,67 +200,62 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
     const currentXml = canBuildOnCandidate
       ? candidate.response.code
       : documentXml
+    const requestCode = options?.requestCode ?? currentXml
+    const compileBaseXml = options?.compileBaseXml ?? currentXml
     try {
       const payload = {
-        action: 'auto',
+        action: options?.action ?? 'auto',
         prompt: userPrompt,
-        code: currentXml,
+        code: requestCode,
         diagramKind: document.kind,
         diagramEngine: 'drawio',
         provider: selectedModel.provider,
         model: selectedModel.model,
         phase,
         conversation,
-        attachments,
+        attachments: submittedAttachments,
       } as const
       const result = await runAiDiagramWorkflow({
         payload,
         request: (requestPayload, onDelta, signal) => requestAiChangeStream(requestPayload, onDelta ?? (() => undefined), signal),
+        prepare: (code) => compileAiDrawioCode(code, compileBaseXml),
         validate: async (code) => {
           const error = validateDrawioXml(code)
           if (error) throw new Error(error)
         },
         onDelta: (delta) => {
-          streamBufferRef.current += delta
-          if (streamFrameRef.current) return
-          streamFrameRef.current = window.requestAnimationFrame(() => {
-            streamFrameRef.current = 0
-            setStreamText(streamBufferRef.current)
-          })
+          appendAiTaskDelta(taskKey, delta)
         },
         onStage: (stage) => {
-          setWorkflowStage(stage)
-          if (stage === 'repairing') {
-            window.cancelAnimationFrame(streamFrameRef.current)
-            streamFrameRef.current = 0
-            streamBufferRef.current = ''
-            setStreamText('')
-          }
+          setAiTaskStage(taskKey, stage)
         },
         signal: controller.signal,
       })
       if (controller.signal.aborted) return
       appendMessage(threadId, 'assistant', result.response.summary)
       if (result.response.action === 'explain') {
-        if (!preserveCandidate) setCandidate(null)
+        if (!preserveCandidate) patchAiTask(taskKey, { candidate: null, candidateStale: false })
         return
       }
-      setCandidate({
-        response: result.response,
-        mode: 'xml',
-        validationError: result.validationError,
-        repairAttempts: result.repairAttempts,
-        documentId: document.id,
-        baseXml: documentXml,
+      patchAiTask(taskKey, {
+        candidate: {
+          response: result.response,
+          mode: 'xml',
+          validationError: result.validationError,
+          repairAttempts: result.repairAttempts,
+          documentId: document.id,
+          baseXml: documentXml,
+        } satisfies VisualCandidate,
+        candidateStale: false,
       })
-      setCandidateStale(false)
     } catch (error) {
-      if (!controller.signal.aborted) setRequestError(readableError(error))
-    } finally {
-      if (controllerRef.current === controller) {
-        controllerRef.current = null
-        setRunning(false)
+      if (controller.signal.aborted) {
+        if (controller.signal.reason === 'user') patchAiTask(taskKey, { requestError: '已停止本次 AI 请求。' })
+      } else {
+        patchAiTask(taskKey, { requestError: readableError(error) })
       }
+    } finally {
+      finishAiTask(taskKey, controller)
     }
   }
 
@@ -292,7 +284,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const runningTitle = workflowStage === 'repairing'
     ? '初次结果未通过，正在自动修复'
     : workflowStage === 'validating'
-      ? '正在检查画布结构'
+      ? '正在本地编译并检查画布'
       : streamText
         ? '正在流式生成'
         : '正在读取画布结构'
@@ -319,7 +311,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         onSelectThread={(threadId) => setActiveThread(document.projectId, threadId)}
         onCreateThread={() => createThread(document.projectId)}
         onDeleteThread={() => { if (activeThread && window.confirm('删除当前对话记录？')) deleteThread(document.projectId, activeThread.id) }}
-        onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); setRequestError(null); window.requestAnimationFrame(() => promptRef.current?.focus()) }}
+        onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); patchAiTask(taskKey, { requestError: null }); window.requestAnimationFrame(() => promptRef.current?.focus()) }}
       >
         {running && <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite"><header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选内容和具体错误交给 AI，无需手工检查。' : streamText ? '完成后会先校验，不会立即覆盖。' : '正在等待模型返回首段内容。'}</small></span></header>{streamText && <pre>{visualAiStreamPreview(streamText)}<i aria-hidden="true" /></pre>}</div>}
         {!running && requestError && streamText && <div className="ai-running-card interrupted"><header><AlertCircle size={18} /><span><strong>已保留中断前的输出</strong><small>你仍可查看模型已经返回的文字，重新发送后会从新请求继续。</small></span></header><pre>{visualAiStreamPreview(streamText)}</pre></div>}
@@ -331,7 +323,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         <section className={`ai-action-dock ${candidate && !candidate.validationError && !candidateStale && !candidateConflict ? 'ready' : ''}`} aria-label="AI 下一步操作">
           <div>{applied ? <CheckCircle2 size={17} /> : candidateStale || candidateConflict || candidate?.validationError ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}<span><strong>{applied ? '候选已应用到可视化画布' : candidateStale ? '先按新意见更新候选' : candidateConflict ? '画布已在候选生成后发生变化' : candidate?.validationError ? '候选仍需修复' : candidate ? '候选已校验，可以安全应用' : '已有对话共识，可以生成候选'}</strong><small>{applied ? '应用前版本已自动保存，可从版本页回退。' : candidate ? '当前画布不会被直接覆盖。' : prompt.trim() ? '先发送输入框里的补充内容。' : '也可以继续输入，进一步补充细节。'}</small></span></div>
           <span className="ai-action-buttons">
-            {!applied && candidate ? <><button type="button" onClick={() => { setCandidate(null); setCandidateStale(false) }}>放弃候选</button>{candidate.validationError || candidateStale || candidateConflict ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求重新生成可视化画布候选。', appendUser: false })}><RefreshCw size={14} />重新生成</button> : candidate.response.action !== 'explain' && <button type="button" className="primary" disabled={!canApply} onClick={() => { createVersion('AI 修改前'); if (candidate.mode === 'mermaid') onApplyMermaid(candidate.response.code); else onApplyXml(candidate.response.code); setApplied(true) }}><Check size={14} />应用到画布</button>}</> : !candidate && <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成可视化画布候选。', appendUser: false })}><Send size={14} />生成候选</button>}
+            {!applied && candidate ? <><button type="button" onClick={() => patchAiTask(taskKey, { candidate: null, candidateStale: false })}>放弃候选</button>{candidate.validationError ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '修复当前候选中的结构错误，保持已经确认的业务流程不变。', appendUser: false, action: 'fix', requestCode: candidate.response.code, compileBaseXml: candidate.baseXml })}><RefreshCw size={14} />修复候选</button> : candidateStale || candidateConflict ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求更新可视化画布候选。', appendUser: false })}><RefreshCw size={14} />更新候选</button> : candidate.response.action !== 'explain' && <button type="button" className="primary" disabled={!canApply} onClick={() => { createVersion('AI 修改前'); if (candidate.mode === 'mermaid') onApplyMermaid(candidate.response.code); else onApplyXml(candidate.response.code); patchAiTask(taskKey, { applied: true }) }}><Check size={14} />应用到画布</button>}</> : !candidate && <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成可视化画布候选。', appendUser: false })}><Send size={14} />生成候选</button>}
           </span>
         </section>
       )}
@@ -339,11 +331,11 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
       <section className="ai-prompt-card">
         <div className={`ai-context-strip ${hasCurrentDiagram ? 'ready' : 'empty'}`} title={hasCurrentDiagram ? 'AI 会携带当前可视化画布和本项目对话上下文' : undefined}><ShieldCheck size={13} /><span>{contextDescription}</span></div>
         <label className="sr-only" htmlFor="visual-ai-prompt">描述要完成的工作</label>
-        <textarea ref={promptRef} id="visual-ai-prompt" rows={3} maxLength={4000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="继续描述需求、回答 AI 问题，或补充对候选画布的调整意见…" disabled={running || !selectedModel} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void run('discuss') } }} />
-        <AiAttachmentPicker attachments={attachments} supportsVision={supportsVision} disabled={running || !selectedModel} onChange={setAttachments} onError={setRequestError} />
+        <textarea ref={promptRef} id="visual-ai-prompt" rows={3} maxLength={4000} value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={(event) => { const files = imageFilesFromClipboard(event.clipboardData); if (!files.length) return; event.preventDefault(); void appendAiAttachmentFiles(attachments, files).then((merged) => { setAttachments(merged); patchAiTask(taskKey, { requestError: null }) }).catch((error) => patchAiTask(taskKey, { requestError: readableError(error) })) }} placeholder="继续描述需求、回答 AI 问题，或直接粘贴截图…" disabled={running || !selectedModel} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void run('discuss') } }} />
+        <AiAttachmentPicker attachments={attachments} supportsVision={supportsVision} disabled={running || !selectedModel} onChange={setAttachments} onError={(error) => patchAiTask(taskKey, { requestError: error })} />
         <footer className="ai-composer-footer">
-          <span className="ai-composer-tools"><AiTemplateMenu templates={promptTemplates} disabled={running} iconForTemplate={templateIcon} onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); setRequestError(null); window.requestAnimationFrame(() => promptRef.current?.focus()) }} /><span className="ai-model-select"><select value={preferences.aiSelectedModel} onChange={(event) => updatePreferences({ aiSelectedModel: event.target.value })} disabled={!preferences.aiEnabledModels.length || running} aria-label="画布 AI 模型"><option value="" disabled>请选择模型</option>{preferences.aiEnabledModels.map((item) => <option value={aiModelKey(item)} key={aiModelKey(item)}>{status?.providers.find((provider) => provider.id === item.provider)?.label || providerLabels[item.provider]} · {item.model}</option>)}</select></span></span>
-          <span className="ai-composer-submit"><small>{prompt.length}/4000 · Ctrl+Enter</small>{running ? <button type="button" className="ai-stop-button" onClick={() => controllerRef.current?.abort('user')}><X size={14} />停止</button> : <button type="button" className="ai-send-button" onClick={() => void run('discuss')} disabled={!canSubmit}><Send size={15} /><span>发送</span></button>}</span>
+          <span className="ai-composer-tools"><AiTemplateMenu templates={promptTemplates} disabled={running} iconForTemplate={templateIcon} onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); patchAiTask(taskKey, { requestError: null }); window.requestAnimationFrame(() => promptRef.current?.focus()) }} /><span className="ai-model-select"><select value={preferences.aiSelectedModel} onChange={(event) => updatePreferences({ aiSelectedModel: event.target.value })} disabled={!preferences.aiEnabledModels.length || running} aria-label="画布 AI 模型"><option value="" disabled>请选择模型</option>{preferences.aiEnabledModels.map((item) => <option value={aiModelKey(item)} key={aiModelKey(item)}>{status?.providers.find((provider) => provider.id === item.provider)?.label || providerLabels[item.provider]} · {item.model}</option>)}</select></span></span>
+          <span className="ai-composer-submit"><small>{prompt.length}/4000 · Ctrl+Enter</small>{running ? <button type="button" className="ai-stop-button" onClick={() => stopAiTask(taskKey)}><X size={14} />停止</button> : <button type="button" className="ai-send-button" onClick={() => void run('discuss')} disabled={!canSubmit}><Send size={15} /><span>发送</span></button>}</span>
         </footer>
       </section>
     </div>

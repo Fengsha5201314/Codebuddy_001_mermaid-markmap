@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Check, Download, FileImage, FileType2, LoaderCircle, Network } from 'lucide-react'
 import type { DrawioExportFormat, DrawioExportResult } from '@/lib/drawio-bridge'
 import { makePortableDrawioSvg } from '@/lib/portable-drawio-svg'
+import { rasterizeSvgMarkup } from '@/lib/export'
 import { Modal } from './Modal'
 
 type VisualDeliveryFormat = 'xml' | 'svg' | 'png' | 'pdf'
@@ -31,12 +32,61 @@ function safeName(value: string): string {
   return value.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ') || '可视化图表'
 }
 
-function triggerDownload(data: string, fileName: string, mime: string) {
+const MAX_DOWNLOAD_DATA_URI_LENGTH = 80_000_000
+
+function isExpectedDataUri(data: string, mime: string): boolean {
+  const escapedMime = mime.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const prefix = data.match(new RegExp(`^data:${escapedMime};base64,`, 'i'))?.[0]
+  if (!prefix || data.length > MAX_DOWNLOAD_DATA_URI_LENGTH) return false
+  const payload = data.slice(prefix.length)
+  return payload.length > 0 && payload.length % 4 === 0 && /^[a-z0-9+/]+={0,2}$/i.test(payload)
+}
+
+async function blobToDataUri(blob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('无法读取图片数据。'))
+    reader.onerror = () => reject(reader.error ?? new Error('无法读取图片数据。'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+async function createPdfFromPng(data: string | Blob, title: string): Promise<Blob> {
+  const pngData = data instanceof Blob ? await blobToDataUri(data) : data
+  if (!isExpectedDataUri(pngData, 'image/png')) {
+    throw new Error('画布没有返回可用于 PDF 的有效 PNG 数据。')
+  }
+  const { jsPDF } = await import('jspdf')
+  const probe = new jsPDF()
+  const image = probe.getImageProperties(pngData)
+  if (!Number.isFinite(image.width) || !Number.isFinite(image.height) || image.width <= 0 || image.height <= 0) {
+    throw new Error('无法读取画布图片尺寸，PDF 未生成。')
+  }
+  const maximumPageSize = 14_000
+  const scale = Math.min(1, maximumPageSize / image.width, maximumPageSize / image.height)
+  const width = Math.max(1, image.width * scale)
+  const height = Math.max(1, image.height * scale)
+  const pdf = new jsPDF({
+    orientation: width >= height ? 'landscape' : 'portrait',
+    unit: 'px',
+    format: [width, height],
+    compress: true,
+    hotfixes: ['px_scaling'],
+  })
+  pdf.setProperties({ title: /^[\x20-\x7e]{1,200}$/.test(title) ? title : 'Fengsha Diagram Export' })
+  pdf.addImage(pngData, 'PNG', 0, 0, width, height, undefined, 'FAST')
+  return pdf.output('blob')
+}
+
+function triggerDownload(data: string | Blob, fileName: string, mime: string) {
   const anchor = document.createElement('a')
-  if (/^data:/i.test(data)) {
+  if (typeof data === 'string' && /^data:/i.test(data)) {
+    if (!isExpectedDataUri(data, mime)) {
+      throw new Error('画布返回的下载数据类型与所选格式不一致。')
+    }
     anchor.href = data
   } else {
-    anchor.href = URL.createObjectURL(new Blob([data], { type: mime }))
+    anchor.href = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], { type: mime }))
   }
   anchor.download = fileName
   anchor.rel = 'noopener'
@@ -62,7 +112,10 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
     setExporting(true)
     setError(null)
     try {
-      const result = await onExport(format)
+      // Use one normalized SVG as the canonical source for SVG, PNG and PDF.
+      // This keeps text weight, line breaks, colors and compatibility identical.
+      const requestFormat: DrawioExportFormat = format === 'xml' ? 'xml' : 'svg'
+      const result = await onExport(requestFormat)
       const extensions: Record<VisualDeliveryFormat, string> = { xml: 'drawio', svg: 'svg', png: 'png', pdf: 'pdf' }
       const mimes: Record<VisualDeliveryFormat, string> = {
         xml: 'application/vnd.jgraph.mxfile',
@@ -70,15 +123,25 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
         png: 'image/png',
         pdf: 'application/pdf',
       }
-      let raw = format === 'xml'
+      const raw = format === 'xml'
         ? result.xml ?? (typeof result.data === 'string' ? result.data : fallbackXml)
         : typeof result.data === 'string'
           ? result.data
           : result.xml
       if (!raw) throw new Error('画布没有返回可下载内容，请稍后重试。')
-      if (format === 'svg') raw = makePortableDrawioSvg(raw)
+      const portableSvg = format === 'xml' ? '' : makePortableDrawioSvg(raw)
+      const raster = format === 'png' || format === 'pdf'
+        ? await rasterizeSvgMarkup(portableSvg)
+        : null
+      const downloadData = format === 'svg'
+        ? portableSvg
+        : format === 'png'
+          ? raster!.blob
+          : format === 'pdf'
+            ? await createPdfFromPng(raster!.blob, title)
+            : raw
       const fileName = `${safeName(title)}.${extensions[format]}`
-      triggerDownload(raw, fileName, mimes[format])
+      triggerDownload(downloadData, fileName, mimes[format])
       onClose()
       onSuccess(fileName)
     } catch (downloadError) {

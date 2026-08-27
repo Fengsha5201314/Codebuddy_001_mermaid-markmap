@@ -1,6 +1,6 @@
-import { FileText, Image, Paperclip, X } from 'lucide-react'
+import { FileText, Paperclip, X } from 'lucide-react'
 import { useRef } from 'react'
-import { AI_ATTACHMENT_ACCEPT, readAiAttachments } from '@/lib/ai-attachments'
+import { AI_ATTACHMENT_ACCEPT, appendAiAttachmentFiles } from '@/lib/ai-attachments'
 import type { AiAttachment } from '@/lib/ai-contract'
 
 interface AiAttachmentPickerProps {
@@ -26,10 +26,8 @@ export function AiAttachmentPicker({ attachments, disabled, supportsVision, onCh
         onChange={(event) => {
           const files = event.target.files
           if (!files?.length) return
-          void readAiAttachments(files)
-            .then((next) => {
-              const merged = [...attachments, ...next]
-              if (merged.length > 6) throw new Error('每次最多添加 6 个附件。')
+          void appendAiAttachmentFiles(attachments, files)
+            .then((merged) => {
               onChange(merged)
               onError('')
             })
@@ -44,7 +42,7 @@ export function AiAttachmentPicker({ attachments, disabled, supportsVision, onCh
         <div className="ai-attachment-list">
           {attachments.map((item, index) => (
             <span key={`${item.name}-${index}`} className={item.kind === 'image' && !supportsVision ? 'unsupported' : ''}>
-              {item.kind === 'image' ? <Image size={13} /> : <FileText size={13} />}
+              {item.kind === 'image' ? <img src={item.content} alt="" /> : <FileText size={13} />}
               <b title={item.name}>{item.name}</b>
               <button type="button" onClick={() => onChange(attachments.filter((_, itemIndex) => itemIndex !== index))} aria-label={`移除 ${item.name}`}><X size={12} /></button>
             </span>

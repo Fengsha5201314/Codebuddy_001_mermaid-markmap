@@ -1,11 +1,12 @@
 {
   "name": "fengsha-diagram-workbench",
   "private": true,
-  "version": "1.5.2",
+  "version": "1.5.10",
   "description": "风沙的本地优先智能流程图与可视化画布工作台",
   "author": "风沙",
   "main": "dist-electron/main.cjs",
   "type": "module",
+  "packageManager": "pnpm@10.13.1",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -23,8 +24,9 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "electron-updater": "^6.8.9",
+    "jspdf": "4.2.1",
     "lucide-react": "^1.11.0",
-    "mermaid": "^11.16.0",
+    "mermaid": "11.17.2",
     "monaco-editor": "^0.55.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
@@ -44,11 +46,6 @@
     "typescript": "~6.0.2",
     "vite": "^8.0.10",
     "vitest": "^4.0.18"
-  },
-  "pnpm": {
-    "overrides": {
-      "dompurify": "3.4.13"
-    }
   },
   "build": {
     "appId": "online.fengsha.diagram",

@@ -49,4 +49,12 @@ describe('inline diagram text editing', () => {
     expect(findEditableTextMatches('gantt\n  需求澄清 :done, req, 2026-08-17, 5d', '需求澄清', 'gantt')).toHaveLength(1)
     expect(findEditableTextMatches('mindmap\n  用户\n    产品经理', '产品经理', 'mindmap')).toHaveLength(1)
   })
+
+  it('matches rendered multiline labels and persists editor line breaks as Mermaid breaks', () => {
+    const code = 'flowchart LR\n  note["审批说明<br/>需要业务负责人确认"]'
+    const match = findEditableTextMatches(code, '审批说明需要业务负责人确认', 'flowchart')[0]
+
+    expect(match).toBeDefined()
+    expect(replaceEditableText(code, match, '审批说明\n需要业务负责人确认')).toContain('审批说明<br/>需要业务负责人确认')
+  })
 })

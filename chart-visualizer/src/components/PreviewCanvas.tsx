@@ -16,6 +16,7 @@ import {
   Sparkles,
   Code2,
   TriangleAlert,
+  Wrench,
   X,
 } from 'lucide-react'
 import { getDiagramTheme } from '@/data/themes'
@@ -27,6 +28,7 @@ import {
   type InlineTextMatch,
 } from '@/lib/inline-edit'
 import { useWorkspaceStore } from '@/store/workspace-store'
+import { findClippedRenderedNodeLabelDetails, repairMermaidLabelVisibility } from '@/lib/mermaid-label-visibility'
 import type { RenderError, RenderResult } from '@/types'
 
 interface PreviewCanvasProps {
@@ -75,7 +77,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
   const updateCode = useWorkspaceStore((state) => state.updateCode)
   const active = documents.find((document) => document.id === activeId)
   const viewportRef = useRef<HTMLDivElement>(null)
-  const inlineInputRef = useRef<HTMLInputElement>(null)
+  const inlineInputRef = useRef<HTMLTextAreaElement>(null)
   const requestRef = useRef(0)
   const activeDocumentRef = useRef<string | null>(null)
   const displayedResultRef = useRef<RenderResult | null>(null)
@@ -271,6 +273,26 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
   const visibleError = previewCode ? candidateError : error
   const theme = getDiagramTheme(active.themeId)
 
+  const repairCellVisibility = () => {
+    if (previewCode || visibleError || !displayed) {
+      showCanvasFeedback(previewCode ? '请先应用 AI 候选，再修复当前画布' : '请先修正源码语法后再检测')
+      return
+    }
+    const renderedRoot = viewportRef.current?.querySelector('[data-rendered-diagram]')
+    const overflowingLabels = renderedRoot ? findClippedRenderedNodeLabelDetails(renderedRoot) : []
+    if (!overflowingLabels.length) {
+      showCanvasFeedback('检测完成：所有单元格文字均在边框内')
+      return
+    }
+    const repaired = repairMermaidLabelVisibility(active.code, overflowingLabels)
+    if (!repaired.changedLabels) {
+      showCanvasFeedback(`检测到 ${overflowingLabels.length} 处溢出，请双击文字手动换行`)
+      return
+    }
+    updateCode(repaired.code)
+    showCanvasFeedback(`已修复 ${repaired.changedLabels} 个单元格，正在重新布局`)
+  }
+
   const openInlineEditor = (event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as Element
     const label = labelElementFromTarget(target)
@@ -333,6 +355,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
         <div className="canvas-actions">
           {previewCode && onExitPreview && <button className="show-source-action" onClick={onExitPreview} title="返回当前图" aria-label="返回当前图"><RotateCcw size={15} /><span>返回当前图</span></button>}
           {onShowSource && <button className="show-source-action" onClick={onShowSource} title="显示源码区" aria-label="显示源码区"><Code2 size={15} /><span>显示源码</span></button>}
+          {!previewCode && <button className="show-source-action repair-cell-action" onClick={repairCellVisibility} title="检测文字溢出并自动换行" aria-label="修复单元格内容可见"><Wrench size={14} /><span>修复单元格内容可见</span></button>}
           <button onClick={() => updatePreferences({ canvasGrid: !preferences.canvasGrid })} className={preferences.canvasGrid ? 'active' : ''} title="网格" aria-label="切换画布网格">
             <Grid3X3 size={15} />
           </button>
@@ -432,11 +455,27 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
               <span><PencilLine size={13} />编辑图中文字</span>
               <button type="button" onClick={() => setInlineEditor(null)} aria-label="取消编辑"><X size={13} /></button>
             </header>
-            <input
+            <textarea
               ref={inlineInputRef}
               value={inlineEditor.value}
               onChange={(event) => setInlineEditor((current) => current ? { ...current, value: event.target.value } : null)}
               onKeyDown={(event) => {
+                if (event.key === 'Enter' && event.altKey) {
+                  event.preventDefault()
+                  const start = event.currentTarget.selectionStart
+                  const end = event.currentTarget.selectionEnd
+                  const nextValue = `${inlineEditor.value.slice(0, start)}\n${inlineEditor.value.slice(end)}`
+                  setInlineEditor((current) => current ? { ...current, value: nextValue } : null)
+                  window.requestAnimationFrame(() => {
+                    inlineInputRef.current?.setSelectionRange(start + 1, start + 1)
+                  })
+                  return
+                }
+                if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault()
+                  commitInlineEdit()
+                  return
+                }
                 if (event.key === 'Escape') {
                   event.preventDefault()
                   setInlineEditor(null)
@@ -460,7 +499,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
               </label>
             )}
             <footer>
-              <small>Enter 确认 · Esc 取消</small>
+              <small>Alt+Enter 换行 · Ctrl+Enter 确认 · Esc 取消</small>
               <button type="submit" disabled={!normalizeRenderedText(inlineEditor.value)}><Check size={13} />同步源码</button>
             </footer>
           </form>

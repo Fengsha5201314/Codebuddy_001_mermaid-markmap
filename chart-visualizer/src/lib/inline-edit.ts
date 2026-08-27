@@ -89,13 +89,34 @@ export function findEditableTextMatches(
       return
     }
 
+    const renderedKey = text.replace(/\s+/g, '')
+    const quotedPattern = /"((?:\\.|[^"\\])*)"/g
+    let quoted: RegExpExecArray | null
+    while ((quoted = quotedPattern.exec(line))) {
+      const sourceText = quoted[1]
+      const sourceKey = normalizeRenderedText(sourceText.replace(/<br\s*\/?>/gi, ' ')).replace(/\s+/g, '')
+      if (sourceKey !== renderedKey) continue
+      const startInLine = quoted.index + 1
+      const classification = classifyOccurrence(line, startInLine, sourceText, kind)
+      if (!classification) continue
+      matches.push({
+        start: lineStart + startInLine,
+        end: lineStart + startInLine + sourceText.length,
+        line: lineIndex + 1,
+        column: startInLine + 1,
+        preview: line.trim().slice(0, 96),
+        ...classification,
+      })
+    }
+
     let fromIndex = 0
     while (fromIndex <= line.length - text.length) {
       const startInLine = line.indexOf(text, fromIndex)
       if (startInLine < 0) break
       const classification = classifyOccurrence(line, startInLine, text, kind)
       if (classification) {
-        matches.push({
+        const absoluteStart = lineStart + startInLine
+        if (!matches.some((match) => match.start === absoluteStart && match.end === absoluteStart + text.length)) matches.push({
           start: lineStart + startInLine,
           end: lineStart + startInLine + text.length,
           line: lineIndex + 1,
@@ -114,7 +135,11 @@ export function findEditableTextMatches(
 }
 
 function safeReplacement(value: string, match: InlineTextMatch): string {
-  let normalized = normalizeRenderedText(value)
+  let normalized = value
+    .split(/\r?\n/)
+    .map((line) => normalizeRenderedText(line))
+    .filter(Boolean)
+    .join('<br/>')
   if (match.context === 'quoted') normalized = normalized.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
   if (match.closingDelimiter === '|') normalized = normalized.replace(/\|/g, '｜')
   if (match.closingDelimiter === ']') normalized = normalized.replace(/\]/g, '］')

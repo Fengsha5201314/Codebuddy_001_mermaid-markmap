@@ -7,7 +7,7 @@ function importFile(name: string, text: string): File {
 
 describe('diagram file import', () => {
   it('imports an exported .drawio file as a visual document source', async () => {
-    const xml = '<mxfile><diagram name="Page-1"><mxGraphModel><root /></mxGraphModel></diagram></mxfile>'
+    const xml = '<mxfile><diagram name="Page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>'
     await expect(parseImportFile(importFile('采购流程.drawio', xml))).resolves.toEqual({
       type: 'visual',
       title: '采购流程',

@@ -12,7 +12,7 @@ flowchart TB
     DESKTOP --> UI["React 图表工作台"]
     WEB --> UI
 
-    UI --> MERMAID["Mermaid 11.16 渲染与源码编辑"]
+    UI --> MERMAID["Mermaid 11.17.2 渲染与源码编辑"]
     UI --> VISUAL["draw.io 可视化画布"]
     UI --> STORE["本地图表、偏好、版本快照"]
     UI --> AIPROXY["AI 代理接口"]

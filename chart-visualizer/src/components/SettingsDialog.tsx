@@ -42,6 +42,7 @@ import { AiApiError, getAiModels, getAiStatus, updateAiProviderSettings } from '
 import { BUNDLED_DRAWIO_VERSION } from '@/lib/drawio-runtime'
 import {
   canFetchProviderModels,
+  modelSupportsVision,
   maskProviderDrafts,
   providerDraftIsDirty,
   type ProviderConnectionDraft,
@@ -177,7 +178,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
     const exists = preferences.aiEnabledModels.some((item) => aiModelKey(item) === key)
     const aiEnabledModels = exists
       ? preferences.aiEnabledModels.filter((item) => aiModelKey(item) !== key)
-      : [...preferences.aiEnabledModels, { ...selection, vision: false }]
+      : [...preferences.aiEnabledModels, { ...selection, visionMode: 'auto' as const }]
     const aiSelectedModel = exists && preferences.aiSelectedModel === key
       ? (aiEnabledModels[0] ? aiModelKey(aiEnabledModels[0]) : '')
       : (!preferences.aiSelectedModel ? key : preferences.aiSelectedModel)
@@ -189,7 +190,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
     const key = aiModelKey(selection)
     updatePreferences({
       aiEnabledModels: preferences.aiEnabledModels.map((item) => aiModelKey(item) === key
-        ? { ...item, vision: !item.vision }
+        ? { ...item, visionMode: modelSupportsVision(item, item) ? 'disabled' : 'enabled', vision: undefined }
         : item),
     })
   }
@@ -379,6 +380,7 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                   const currentKey = currentModel ? aiModelKey({ provider: providerId, model: currentModel }) : ''
                   const enabled = preferences.aiEnabledModels.some((item) => aiModelKey(item) === currentKey)
                   const enabledModel = preferences.aiEnabledModels.find((item) => aiModelKey(item) === currentKey)
+                  const enabledModelSupportsVision = modelSupportsVision(enabledModel, enabledModel)
                   const message = providerMessages[providerId]
                   const providerDirty = providerDraftIsDirty(providerId, draft, provider)
                   const modelFetchReady = canFetchProviderModels(providerId, draft, provider)
@@ -460,10 +462,12 @@ export function SettingsDialog({ open, onClose, onImport, onBackup }: SettingsDi
                           </button>
                           {enabled && providerId !== 'deepseek' && (
                             <button
-                              className={enabledModel?.vision ? 'enabled vision-toggle' : 'vision-toggle'}
+                              className={enabledModelSupportsVision ? 'enabled vision-toggle' : 'vision-toggle'}
                               onClick={() => toggleModelVision({ provider: providerId, model: currentModel })}
-                              title="仅当该模型本身支持图片输入时开启"
-                            >图片识别：{enabledModel?.vision ? '开' : '关'}</button>
+                              title={enabledModel?.visionMode === 'auto' || enabledModel?.visionMode === undefined
+                                ? '当前根据模型名称自动判断；点击可手动覆盖'
+                                : '手动设置；点击可切换'}
+                            >图片识别：{enabledModelSupportsVision ? '开' : '关'}</button>
                           )}
                           {enabled && providerId === 'deepseek' && <small className="model-capability-note">仅文字</small>}
                         </div>

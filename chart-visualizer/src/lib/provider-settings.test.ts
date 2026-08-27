@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { AiProviderId, AiStatus } from '@/lib/ai-contract'
 import {
   canFetchProviderModels,
+  inferModelVision,
   maskProviderDrafts,
+  modelSupportsVision,
   providerDraftIsDirty,
   type ProviderConnectionDraft,
 } from '@/lib/provider-settings'
@@ -35,5 +37,18 @@ describe('AI provider settings UI state', () => {
     const savedDraft = { ...drafts.cpa, apiKey: '', showKey: false }
     expect(providerDraftIsDirty('cpa', savedDraft, configured)).toBe(false)
     expect(canFetchProviderModels('cpa', savedDraft, configured)).toBe(true)
+  })
+
+  it('auto-enables multimodal CPA GPT 5 models while keeping a manual off switch', () => {
+    const selection = { provider: 'cpa' as const, model: 'gpt-5.6-terra' }
+    expect(inferModelVision(selection)).toBe(true)
+    expect(modelSupportsVision(selection, { ...selection, vision: false })).toBe(true)
+    expect(modelSupportsVision(selection, { ...selection, visionMode: 'disabled' })).toBe(false)
+  })
+
+  it('keeps unknown models conservative until the user explicitly enables vision', () => {
+    const selection = { provider: 'custom' as const, model: 'private-text-model' }
+    expect(modelSupportsVision(selection, { ...selection, visionMode: 'auto' })).toBe(false)
+    expect(modelSupportsVision(selection, { ...selection, visionMode: 'enabled' })).toBe(true)
   })
 })

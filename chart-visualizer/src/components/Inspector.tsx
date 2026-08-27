@@ -100,7 +100,7 @@ export function Inspector({ onInsert, onClose, onOpenSettings, onPreviewCandidat
             {(active.kind === 'swimlane' || active.kind === 'architecture' || active.kind === 'c4') && (
               <div className="beta-note">
                 <strong>实验语法兼容提示</strong>
-                <p>此图种依赖 Mermaid 11.16。导出图片不受影响；复制源码到旧环境时需确认版本。</p>
+                <p>此图种依赖 Mermaid 11.17.2。导出图片不受影响；复制源码到旧环境时需确认版本。</p>
               </div>
             )}
           </>

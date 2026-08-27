@@ -464,7 +464,7 @@ function App() {
           onExport={(format) => {
             const canvas = visualCanvasRef.current
             if (!canvas) return Promise.reject(new Error('画布尚未准备完成。'))
-            return canvas.exportDiagram(format, format === 'png' ? { scale: 2, border: 16 } : { border: 16 })
+            return canvas.exportDiagram(format, { border: 16 })
           }}
         />
       )}
@@ -482,7 +482,7 @@ function App() {
             <div><p className="eyebrow">产品定位</p><h3>中文工作场景的本地优先专业制图工作台</h3><p>用模板、结构化编辑和 Mermaid 源码完成流程、泳道与架构成果，并稳定交付到文档和演示。</p></div>
           </div>
           <div className="roadmap-grid">
-            <article><CheckCircle2 size={19} /><strong>本轮已落地</strong><p>Mermaid 11.16、CPA / DeepSeek AI、专业源码编辑，以及可拖拽的 draw.io 画布、自动保存、版本与多格式交付。</p></article>
+            <article><CheckCircle2 size={19} /><strong>本轮已落地</strong><p>Mermaid 11.17.2、CPA / DeepSeek AI、专业源码编辑，以及可拖拽的 draw.io 画布、自动保存、版本与多格式交付。</p></article>
             <article><Layers3 size={19} /><strong>下一核心</strong><p>画布 AI 局部编辑、结构化图模型、私有化画布部署、Visio 导入增强、PDF/PPTX 组合交付与质量检查。</p></article>
             <article><ShieldCheck size={19} /><strong>产品原则</strong><p>源码始终可带走，默认不上传；不承诺所有图种像素级双向，优先保证成果稳定可维护。</p></article>
             <article><Sparkles size={19} /><strong>后续增强</strong><p>AI 局部选择编辑、表格导入、协作、团队模板、账号、积分与计费，在核心复用率得到验证后接入。</p></article>

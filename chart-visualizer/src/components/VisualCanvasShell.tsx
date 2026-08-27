@@ -147,7 +147,6 @@ export function VisualCanvasShell({
           title="可视化流程图编辑器"
           className={`visual-canvas-frame ${ready && !error ? 'is-visible' : ''}`}
           allow="clipboard-read; clipboard-write; fullscreen"
-          allowFullScreen
           referrerPolicy="strict-origin-when-cross-origin"
         />
 

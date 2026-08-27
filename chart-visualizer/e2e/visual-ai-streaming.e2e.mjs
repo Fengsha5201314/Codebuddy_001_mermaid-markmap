@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright-core'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const packagedExecutable = process.env.FENGSHA_E2E_EXECUTABLE?.trim()
 const userDataDirectory = await mkdtemp(path.join(tmpdir(), 'fengsha-visual-ai-e2e-'))
 let application
 let providerServer
@@ -61,7 +62,10 @@ try {
 
   application = await electron.launch({
     cwd: projectRoot,
-    args: [path.join(projectRoot, 'dist-electron', 'main.cjs'), `--user-data-dir=${userDataDirectory}`],
+    ...(packagedExecutable ? { executablePath: packagedExecutable } : {}),
+    args: packagedExecutable
+      ? [`--user-data-dir=${userDataDirectory}`]
+      : [path.join(projectRoot, 'dist-electron', 'main.cjs'), `--user-data-dir=${userDataDirectory}`],
     env: { ...process.env, FENGSHA_DESKTOP_PORT: '43834' },
     timeout: 30_000,
   })
@@ -112,10 +116,15 @@ try {
     throw new Error(`Live output fell back to a character counter: ${streamedText}`)
   }
 
+  await page.getByRole('button', { name: '关闭 AI 与工具面板' }).click()
+  await page.locator('.visual-ai-assistant').waitFor({ state: 'detached', timeout: 5_000 })
+  await page.waitForTimeout(3_200)
+  await page.getByRole('button', { name: '打开 AI 助手' }).click()
+  await page.locator('.visual-ai-assistant').waitFor({ state: 'visible', timeout: 8_000 })
   await page.locator('.ai-message-list article.assistant').filter({ hasText: '已整理 AI 学习路径' }).waitFor({ state: 'visible', timeout: 8_000 })
   if (await page.locator('.ai-error-card').count()) throw new Error('Successful streaming request displayed an error card.')
 
-  process.stdout.write(`${JSON.stringify({ promptCleared: true, liveXmlVisible: true, completedWithoutError: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ promptCleared: true, liveXmlVisible: true, panelClosedDuringRequest: true, resultRecoveredAfterReopen: true, completedWithoutError: true })}\n`)
 } finally {
   await application?.close().catch(() => undefined)
   await new Promise((resolve) => providerServer?.close(() => resolve())).catch(() => undefined)
