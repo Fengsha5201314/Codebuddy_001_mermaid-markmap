@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">风沙图表 CLI 真实调用示例</title>
+  <desc id="desc">终端中依次校验 Mermaid、生成高清 PNG，并得到单行 JSON 结果。</desc>
+  <rect width="1400" height="760" rx="28" fill="#0f1b2b"/>
+  <rect width="1400" height="70" rx="28" fill="#17283d"/>
+  <rect y="42" width="1400" height="28" fill="#17283d"/>
+  <circle cx="42" cy="35" r="10" fill="#ff6b6b"/><circle cx="74" cy="35" r="10" fill="#ffd166"/><circle cx="106" cy="35" r="10" fill="#4fd1a1"/>
+  <text x="700" y="44" text-anchor="middle" font-family="Microsoft YaHei,Consolas,monospace" font-size="20" fill="#b8c7da">PowerShell · 风沙图表 CLI v1.6.0</text>
+  <g font-family="Consolas,Microsoft YaHei,monospace" font-size="20">
+    <text x="55" y="125" fill="#64d8b4">PS&gt;</text><text x="110" y="125" fill="#f5f8fc"> fengsha-diagram validate process.mmd --json</text>
+    <text x="55" y="165" fill="#9fb3c8">{"ok":true,"command":"validate","version":"1.6.0",</text>
+    <text x="55" y="200" fill="#9fb3c8"> "diagram":{"kind":"flowchart","width":675.4,"height":247.1}}</text>
+    <text x="55" y="270" fill="#64d8b4">PS&gt;</text><text x="110" y="270" fill="#f5f8fc"> fengsha-diagram render process.mmd -o process.png --json</text>
+    <text x="55" y="310" fill="#9fb3c8">{"ok":true,"command":"render","version":"1.6.0",</text>
+    <text x="55" y="345" fill="#9fb3c8"> "output":"D:\work\process.png","diagram":{"kind":"flowchart",</text>
+    <text x="55" y="380" fill="#9fb3c8"> "outputWidth":2828,"outputHeight":1151,"scale":4}}</text>
+    <text x="55" y="450" fill="#64d8b4">PS&gt;</text><text x="110" y="450" fill="#f5f8fc"> type process.mmd | fengsha-diagram render - -o process.svg --json</text>
+    <text x="55" y="490" fill="#9fb3c8">{"ok":true,"command":"render","output":"D:\work\process.svg"}</text>
+    <text x="55" y="560" fill="#64d8b4">PS&gt;</text><text x="110" y="560" fill="#f5f8fc"> fengsha-diagram compile plan.json -o process.drawio --json</text>
+    <text x="55" y="600" fill="#9fb3c8">{"ok":true,"command":"compile","diagram":{"nodeCount":3,</text>
+    <text x="55" y="635" fill="#9fb3c8"> "edgeCount":2,"laneCount":2}}</text>
+  </g>
+  <rect x="55" y="685" width="1290" height="38" rx="10" fill="#18344a"/>
+  <text x="700" y="711" text-anchor="middle" font-family="Microsoft YaHei,Arial,sans-serif" font-size="17" fill="#bfe8dc">无弹窗 · 无人工点击 · 退出码明确 · 可直接由 AI 解析</text>
+</svg>
+

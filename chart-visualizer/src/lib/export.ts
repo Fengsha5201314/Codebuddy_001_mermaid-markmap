@@ -326,7 +326,7 @@ export async function rasterizeSvgMarkup(
 ): Promise<{ blob: Blob; width: number; height: number; scale: number }> {
   const source = getSvgMarkupDimensions(svgMarkup)
   const scale = recommendedRasterScale(source.width, source.height, targetLongEdge)
-  const blob = await svgToRaster(svgMarkup, source.width, source.height, scale, 'png')
+  const blob = await renderPreparedSvgToRaster(svgMarkup, source.width, source.height, scale, 'png')
   return {
     blob,
     width: Math.ceil(source.width * scale),
@@ -393,7 +393,7 @@ export function prepareSvgForExport(
   }
 }
 
-async function svgToRaster(
+export async function renderPreparedSvgToRaster(
   svg: string,
   width: number,
   height: number,
@@ -456,7 +456,7 @@ export async function exportDiagram(
     return
   }
 
-  const raster = await svgToRaster(svg, width, height, options.scale, options.format)
+  const raster = await renderPreparedSvgToRaster(svg, width, height, options.scale, options.format)
   downloadBlob(raster, `${base}.${options.format === 'jpeg' ? 'jpg' : 'png'}`)
 }
 

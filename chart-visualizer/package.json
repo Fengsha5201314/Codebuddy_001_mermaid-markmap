@@ -1,17 +1,22 @@
 {
   "name": "fengsha-diagram-workbench",
   "private": true,
-  "version": "1.5.10",
+  "version": "1.6.0",
   "description": "风沙的本地优先智能流程图与可视化画布工作台",
   "author": "风沙",
   "main": "dist-electron/main.cjs",
+  "bin": {
+    "fengsha-diagram": "dist-cli/fengsha-diagram.cjs"
+  },
   "type": "module",
   "packageManager": "pnpm@10.13.1",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && pnpm cli:compile",
     "preview": "vite preview",
-    "desktop:compile": "tsc -p tsconfig.desktop.json --noEmit && esbuild desktop/main.ts desktop/preload.ts --bundle --platform=node --format=cjs --target=node22 --outdir=dist-electron --out-extension:.js=.cjs --external:electron --external:electron-updater",
+    "cli:compile": "tsc -p tsconfig.cli.json --noEmit && esbuild cli/main.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist-cli/fengsha-diagram.cjs --external:electron --banner:js=\"#!/usr/bin/env node\"",
+    "cli": "pnpm cli:compile && node dist-cli/fengsha-diagram.cjs",
+    "desktop:compile": "tsc -p tsconfig.desktop.json --noEmit && esbuild desktop/main.ts desktop/preload.ts desktop/cli-preload.ts --bundle --platform=node --format=cjs --target=node22 --outdir=dist-electron --out-extension:.js=.cjs --external:electron --external:electron-updater",
     "desktop:dev": "pnpm build && pnpm desktop:compile && electron dist-electron/main.cjs",
     "desktop:pack": "pnpm build && pnpm desktop:compile && electron-builder --dir",
     "desktop:build": "pnpm build && pnpm desktop:compile && electron-builder --win nsis --publish never",
@@ -19,6 +24,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e:user-data": "pnpm build && pnpm desktop:compile && node e2e/desktop-user-data.e2e.mjs",
+    "test:e2e:cli": "pnpm build && pnpm desktop:compile && node e2e/cli.e2e.mjs",
     "test:e2e:visual": "pnpm build && pnpm desktop:compile && node e2e/visual-canvas.e2e.mjs"
   },
   "dependencies": {
@@ -50,6 +56,7 @@
   "build": {
     "appId": "online.fengsha.diagram",
     "productName": "风沙图表工作台",
+    "executableName": "FengshaDiagram",
     "artifactName": "Fengsha-Diagram-Setup-${version}-${arch}.${ext}",
     "asar": true,
     "directories": {
@@ -59,7 +66,14 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "dist-cli/**/*",
       "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "build/fengsha-diagram.cmd",
+        "to": "fengsha-diagram.cmd"
+      }
     ],
     "extraResources": [
       {
@@ -80,6 +94,7 @@
     },
     "nsis": {
       "oneClick": false,
+      "include": "build/installer.nsh",
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,

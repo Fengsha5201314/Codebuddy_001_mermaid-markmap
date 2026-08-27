@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="620" viewBox="0 0 1400 620" role="img" aria-labelledby="title desc">
+  <title id="title">风沙图表 CLI 架构</title>
+  <desc id="desc">AI 工具通过 CLI 调用与桌面端相同的浏览器渲染、校验和导出内核，生成 SVG、PNG、PDF 或 draw.io。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f6f9ff"/><stop offset="1" stop-color="#eef8f4"/></linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#54708f"/></marker>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#17324d" flood-opacity=".12"/></filter>
+  </defs>
+  <rect width="1400" height="620" rx="28" fill="url(#bg)"/>
+  <text x="70" y="72" font-family="Microsoft YaHei,Arial,sans-serif" font-size="34" font-weight="700" fill="#143354">AI 通过一个稳定命令调用完整制图内核</text>
+  <text x="70" y="108" font-family="Microsoft YaHei,Arial,sans-serif" font-size="18" fill="#5b7087">非交互、可脚本化、机器可读；桌面端与 CLI 共享渲染和导出逻辑</text>
+  <g filter="url(#shadow)" font-family="Microsoft YaHei,Arial,sans-serif">
+    <rect x="70" y="190" width="250" height="250" rx="24" fill="#153553"/>
+    <text x="195" y="240" text-anchor="middle" font-size="24" font-weight="700" fill="#fff">AI 调用方</text>
+    <rect x="105" y="275" width="180" height="46" rx="12" fill="#234b70"/><text x="195" y="305" text-anchor="middle" font-size="17" fill="#dcecff">Codex / Claude Code</text>
+    <rect x="105" y="335" width="180" height="46" rx="12" fill="#234b70"/><text x="195" y="365" text-anchor="middle" font-size="17" fill="#dcecff">Agent / 自动化脚本</text>
+    <rect x="395" y="190" width="250" height="250" rx="24" fill="#fff" stroke="#3371ca" stroke-width="2"/>
+    <text x="520" y="240" text-anchor="middle" font-size="24" font-weight="700" fill="#1c4f88">fengsha-diagram</text>
+    <text x="520" y="278" text-anchor="middle" font-size="16" fill="#57718e">validate · render · compile</text>
+    <rect x="430" y="310" width="180" height="50" rx="12" fill="#eaf2ff"/><text x="520" y="342" text-anchor="middle" font-size="16" fill="#245b9e">JSON 输出 + 退出码</text>
+    <rect x="430" y="375" width="180" height="38" rx="10" fill="#f2f6fb"/><text x="520" y="400" text-anchor="middle" font-size="14" fill="#57718e">stdin / 文件输入</text>
+    <rect x="720" y="160" width="310" height="310" rx="24" fill="#fff" stroke="#28a177" stroke-width="2"/>
+    <text x="875" y="212" text-anchor="middle" font-size="24" font-weight="700" fill="#167457">共享制图内核</text>
+    <rect x="765" y="250" width="220" height="50" rx="12" fill="#e6f7f0"/><text x="875" y="282" text-anchor="middle" font-size="16" fill="#17684f">Mermaid 语法校验</text>
+    <rect x="765" y="315" width="220" height="50" rx="12" fill="#e6f7f0"/><text x="875" y="347" text-anchor="middle" font-size="16" fill="#17684f">中文文字可见性修复</text>
+    <rect x="765" y="380" width="220" height="50" rx="12" fill="#e6f7f0"/><text x="875" y="412" text-anchor="middle" font-size="16" fill="#17684f">高清矢量与栅格导出</text>
+    <rect x="1105" y="190" width="225" height="250" rx="24" fill="#fff" stroke="#d58a2f" stroke-width="2"/>
+    <text x="1218" y="240" text-anchor="middle" font-size="24" font-weight="700" fill="#9d5b12">交付文件</text>
+    <text x="1218" y="295" text-anchor="middle" font-size="20" fill="#754b1e">SVG · PNG</text>
+    <text x="1218" y="338" text-anchor="middle" font-size="20" fill="#754b1e">JPG · PDF</text>
+    <text x="1218" y="381" text-anchor="middle" font-size="20" fill="#754b1e">draw.io XML</text>
+  </g>
+  <g stroke="#54708f" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M320 315 H382"/><path d="M645 315 H707"/><path d="M1030 315 H1092"/>
+  </g>
+  <rect x="340" y="505" width="720" height="64" rx="16" fill="#153553"/>
+  <text x="700" y="545" text-anchor="middle" font-family="Microsoft YaHei,Arial,sans-serif" font-size="18" fill="#fff">同一输入 + 同一版本 + 同一参数 = 可重复的输出</text>
+</svg>
+

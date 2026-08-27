@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
@@ -11,6 +11,12 @@ import packageInfo from '../package.json' with { type: 'json' }
 import { resolveDesktopPort } from './origin.ts'
 import { isSameOriginNavigation, isTrustedLocalRequest, resolveDevelopmentRendererUrl } from './security.ts'
 import { migrateLegacyAiSettings, resolveDesktopUserDataDirectory } from './user-data.ts'
+import {
+  CLI_WORKER_FLAG,
+  type CliRendererResponse,
+  type CliWorkerEnvelope,
+  type CliWorkerResult,
+} from '../src/cli-contracts.ts'
 
 const APP_NAME = '风沙图表工作台'
 const APP_ID = 'online.fengsha.diagram'
@@ -18,12 +24,29 @@ const APP_HOST = '127.0.0.1'
 const RELEASES_URL = 'https://github.com/Fengsha5201314/Codebuddy_001_mermaid-markmap/releases'
 const SAFE_STORAGE_PREFIX = 'electron-safe-storage:v1:'
 
-const persistentUserDataDirectory = resolveDesktopUserDataDirectory(
-  app.getPath('appData'),
-  process.argv,
-  process.env.FENGSHA_DESKTOP_USER_DATA_DIR,
-)
-if (persistentUserDataDirectory) app.setPath('userData', persistentUserDataDirectory)
+function resolveCliWorkerArguments(argv: string[]) {
+  const flagIndex = argv.indexOf(CLI_WORKER_FLAG)
+  if (flagIndex < 0) return null
+  const requestPath = argv[flagIndex + 1]
+  const resultPath = argv[flagIndex + 2]
+  return requestPath && resultPath
+    ? { requestPath: path.resolve(requestPath), resultPath: path.resolve(resultPath) }
+    : null
+}
+
+const cliWorkerArguments = resolveCliWorkerArguments(process.argv)
+if (cliWorkerArguments) app.disableHardwareAcceleration()
+
+if (cliWorkerArguments) {
+  app.setPath('userData', path.join(path.dirname(cliWorkerArguments.requestPath), 'browser-profile'))
+} else {
+  const persistentUserDataDirectory = resolveDesktopUserDataDirectory(
+    app.getPath('appData'),
+    process.argv,
+    process.env.FENGSHA_DESKTOP_USER_DATA_DIR,
+  )
+  if (persistentUserDataDirectory) app.setPath('userData', persistentUserDataDirectory)
+}
 
 type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'up-to-date' | 'error' | 'development'
 
@@ -255,11 +278,13 @@ async function serveStaticFile(request: IncomingMessage, response: ServerRespons
   }
 }
 
-async function startLocalServer() {
+async function startLocalServer(portOverride?: number) {
   if (localServer && localOrigin) return localOrigin
   const appRoot = app.isPackaged ? app.getAppPath() : process.cwd()
   const staticRoot = path.join(appRoot, 'dist')
-  const appPort = await resolveDesktopPort(app.getPath('userData'), process.env.FENGSHA_DESKTOP_PORT)
+  const appPort = portOverride === 0
+    ? 0
+    : await resolveDesktopPort(app.getPath('userData'), process.env.FENGSHA_DESKTOP_PORT)
   const aiMiddleware = createAiMiddleware({
     settingsFile: path.join(app.getPath('userData'), 'ai-providers.json'),
     isApiKeyProtected: (storedValue) => storedValue.startsWith(SAFE_STORAGE_PREFIX),
@@ -316,6 +341,109 @@ async function startLocalServer() {
     })
   })
   return localOrigin
+}
+
+async function writeJsonAtomically(filePath: string, value: unknown) {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 })
+  await rename(temporary, filePath)
+}
+
+async function writeCliArtifact(envelope: CliWorkerEnvelope, response: Extract<CliRendererResponse, { ok: true }>) {
+  if (!response.artifact) return undefined
+  if (!envelope.outputPath) throw new Error('CLI 结果包含文件内容，但没有指定输出路径。')
+  const outputPath = path.resolve(envelope.outputPath)
+  await mkdir(path.dirname(outputPath), { recursive: true })
+  const temporary = `${outputPath}.${process.pid}.${Date.now()}.tmp`
+  const payload = response.artifact.encoding === 'base64'
+    ? Buffer.from(response.artifact.content, 'base64')
+    : response.artifact.content
+  await writeFile(temporary, payload)
+  try {
+    if (envelope.overwrite) await rm(outputPath, { force: true })
+    await rename(temporary, outputPath)
+  } catch (error) {
+    await rm(temporary, { force: true })
+    throw error
+  }
+  return outputPath
+}
+
+async function runCliWorker(requestPath: string, resultPath: string) {
+  let workerWindow: BrowserWindow | null = null
+  try {
+    const envelope = JSON.parse(await readFile(requestPath, 'utf8')) as CliWorkerEnvelope
+    if (!envelope?.request || envelope.request.protocolVersion !== 1) throw new Error('CLI 请求格式不正确。')
+    const rendererOrigin = await startLocalServer(0)
+    workerWindow = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 800,
+      webPreferences: {
+        preload: path.join(__dirname, 'cli-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    })
+    const response = await new Promise<CliRendererResponse>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup()
+        reject(new Error('CLI 浏览器渲染超时。'))
+      }, 280_000)
+      const cleanup = () => {
+        clearTimeout(timeout)
+        ipcMain.removeListener('cli:ready', onReady)
+        ipcMain.removeListener('cli:response', onResponse)
+      }
+      const trusted = (event: IpcMainEvent) => Boolean(workerWindow && !workerWindow.isDestroyed() && event.sender === workerWindow.webContents)
+      const onReady = (event: IpcMainEvent) => {
+        if (!trusted(event) || !workerWindow) return
+        workerWindow.webContents.send('cli:request', envelope.request)
+      }
+      const onResponse = (event: IpcMainEvent, value: CliRendererResponse) => {
+        if (!trusted(event)) return
+        cleanup()
+        resolve(value)
+      }
+      ipcMain.on('cli:ready', onReady)
+      ipcMain.on('cli:response', onResponse)
+      workerWindow?.webContents.once('render-process-gone', (_event, details) => {
+        cleanup()
+        reject(new Error(`CLI 浏览器渲染进程异常退出：${details.reason}`))
+      })
+      void workerWindow?.loadURL(`${rendererOrigin}/cli.html`).catch((error) => {
+        cleanup()
+        reject(error)
+      })
+    })
+    let result: CliWorkerResult
+    if (!response.ok) {
+      result = {
+        ok: false,
+        category: response.category,
+        message: response.line ? `${response.message}（第 ${response.line} 行）` : response.message,
+      }
+    } else {
+      const outputPath = await writeCliArtifact(envelope, response)
+      result = { ok: true, outputPath, metadata: response.metadata }
+    }
+    await writeJsonAtomically(resultPath, result)
+  } catch (error) {
+    await writeJsonAtomically(resultPath, {
+      ok: false,
+      category: 'internal',
+      message: error instanceof Error ? error.message : 'CLI 工作进程失败。',
+    } satisfies CliWorkerResult)
+  } finally {
+    if (workerWindow && !workerWindow.isDestroyed()) workerWindow.destroy()
+    localServer?.closeIdleConnections()
+    localServer?.closeAllConnections()
+    await new Promise<void>((resolve) => localServer?.close(() => resolve()) ?? resolve())
+    localServer = null
+    localOrigin = ''
+  }
 }
 
 async function createMainWindow() {
@@ -379,9 +507,24 @@ async function createMainWindow() {
   }
 }
 
-const ownsLock = app.requestSingleInstanceLock()
+const ownsLock = cliWorkerArguments ? true : app.requestSingleInstanceLock()
 if (!ownsLock) {
   app.quit()
+} else if (cliWorkerArguments) {
+  app.whenReady().then(async () => {
+    await runCliWorker(cliWorkerArguments.requestPath, cliWorkerArguments.resultPath)
+    app.exit(0)
+  }).catch(async (error) => {
+    try {
+      await writeJsonAtomically(cliWorkerArguments.resultPath, {
+        ok: false,
+        category: 'internal',
+        message: error instanceof Error ? error.message : 'CLI 启动失败。',
+      } satisfies CliWorkerResult)
+    } finally {
+      app.exit(1)
+    }
+  })
 } else {
   app.setAppUserModelId(APP_ID)
   app.on('second-instance', () => {

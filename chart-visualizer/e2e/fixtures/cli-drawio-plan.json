@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "mode": "replace",
+  "title": "AI 结构化采购审批流程",
+  "direction": "LR",
+  "lanes": [
+    { "id": "business", "label": "业务部门" },
+    { "id": "finance", "label": "财务部门" }
+  ],
+  "nodes": [
+    { "id": "start", "type": "start", "label": "提出申请", "lane": "business" },
+    { "id": "review", "type": "decision", "label": "预算充足？", "lane": "finance", "after": "start" },
+    { "id": "finish", "type": "end", "label": "审批完成", "lane": "business", "after": "review" }
+  ],
+  "edges": [
+    { "source": "start", "target": "review" },
+    { "source": "review", "target": "finish", "label": "通过", "kind": "yes" }
+  ]
+}
+

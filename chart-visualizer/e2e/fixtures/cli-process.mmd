@@ -1,0 +1,7 @@
+flowchart LR
+  request([业务需求]) --> review{审批通过？}
+  review -->|是| execute[执行处理]
+  review -->|否| revise[补充材料]
+  revise --> request
+  execute --> done([完成交付])
+

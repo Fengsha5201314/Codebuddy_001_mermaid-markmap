@@ -11,6 +11,8 @@
 3. 安装程序会创建“风沙图表工作台”桌面快捷方式和开始菜单入口。
 4. 以后直接双击桌面快捷方式使用，不需要打开命令窗口，也不需要手动启动网页服务。
 
+从 v1.6.0 开始，安装程序还会注册 `fengsha-diagram` 命令，供其他 AI 工具、脚本和批量流程直接调用。普通桌面用户无需使用命令行；需要自动化时请查看 [CLI 图文使用说明](cli-guide.md)。
+
 如果 Windows 显示来源提醒，请先确认文件确实来自上述 GitHub Releases 页面，再按组织的安全规范决定是否运行。重要版本的文件校验值以 Release 说明为准。
 
 ### 查看版本和更新
@@ -305,7 +307,18 @@ AI 生成或修改且带有 Mermaid 结构时，会同步回同一项目源码�
 
 网页版数据属于当前网站地址的浏览器本地存储。更换域名、端口、浏览器或清理站点数据后，原数据不会自动迁移。请在迁移前下载完整备份，并在新地址导入。
 
-## 13. 提交问题时请提供
+## 13. AI 与自动化工具通过 CLI 调用
+
+安装 v1.6.0 或更高版本后，可在 PowerShell、CMD、Codex 或 Claude Code 中运行：
+
+```powershell
+fengsha-diagram validate process.mmd --json
+fengsha-diagram render process.mmd -o process.png --json
+```
+
+CLI 不会打开可见窗口，不读取桌面图表项目和 AI Key，且与桌面端共用同一套校验、中文文字修复和高清导出内核。完整命令、JSON 格式、退出码、draw.io 计划格式和 AI 调用模板见 [CLI 图文使用说明](cli-guide.md)。
+
+## 14. 提交问题时请提供
 
 - 软件版本（设置 → 版本与更新）；
 - Windows 版本；

@@ -155,6 +155,12 @@ export default defineConfig(({ mode }) => {
     build: {
       target: 'es2022',
       sourcemap: false,
+      rollupOptions: {
+        input: {
+          main: fileURLToPath(new URL('./index.html', import.meta.url)),
+          cli: fileURLToPath(new URL('./cli.html', import.meta.url)),
+        },
+      },
     },
     server: {
       watch: {
