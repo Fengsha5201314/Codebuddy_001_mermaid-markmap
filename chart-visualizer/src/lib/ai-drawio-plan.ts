@@ -1,4 +1,6 @@
 import { validateDrawioXml } from '@/lib/drawio-xml'
+import { fengshaPlanToLegacyDrawioSource, isFengshaPlanSource } from '@/lib/fengsha-plan'
+import { wrapTextToPixelWidth } from '@/lib/mermaid-label-visibility'
 
 type DrawioDirection = 'LR' | 'TB'
 type DrawioNodeType = 'start' | 'end' | 'process' | 'decision' | 'document' | 'data' | 'system' | 'manual' | 'note'
@@ -256,11 +258,18 @@ function edgeStyle(kind: DrawioEdge['kind']): string {
 }
 
 function nodeSize(node: DrawioNode): { width: number; height: number } {
-  if (node.width && node.height) return { width: node.width, height: node.height }
-  if (node.type === 'start' || node.type === 'end') return { width: node.width ?? 82, height: node.height ?? 52 }
-  if (node.type === 'decision') return { width: node.width ?? 126, height: node.height ?? 82 }
-  if (node.type === 'note') return { width: node.width ?? 180, height: node.height ?? 82 }
-  return { width: node.width ?? 156, height: node.height ?? 64 }
+  const base = node.type === 'start' || node.type === 'end'
+    ? { width: 108, height: 58 }
+    : node.type === 'decision'
+      ? { width: 164, height: 104 }
+      : node.type === 'note'
+        ? { width: 196, height: 82 }
+        : { width: 176, height: 68 }
+  const width = node.width ?? base.width
+  const contentWidth = Math.max(24, width - (node.type === 'decision' ? 60 : 28))
+  const lines = node.label.split(/\r?\n/).flatMap((line) => wrapTextToPixelWidth(line, 14, contentWidth))
+  const requiredHeight = Math.ceil(Math.max(1, lines.length) * 14 * 1.35 + (node.type === 'decision' ? 50 : 26))
+  return { width, height: Math.max(node.height ?? 0, base.height, requiredHeight) }
 }
 
 function inferColumns(nodes: DrawioNode[], edges: DrawioEdge[]): Map<string, number> {
@@ -293,17 +302,35 @@ function compileReplacement(plan: ReplacePlan): string {
   for (const node of plan.nodes) nodeIds.set(node.id, safeId(node.id, 'node', usedIds))
   const maximumColumn = Math.max(0, ...[...columns.values()])
   const laneWidth = Math.max(920, 180 + (maximumColumn + 1) * 196)
-  const laneHeight = 176
   const cells: string[] = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>']
 
-  lanes.forEach((lane, index) => {
+  const laneHeights = new Map<string, number>()
+  const laneOffsets = new Map<string, number>()
+  for (const lane of lanes) {
+    const laneNodes = plan.nodes.filter((node) => node.lane === lane.id)
+    const perColumn = new Map<number, number>()
+    for (const node of laneNodes) {
+      const column = columns.get(node.id) ?? 0
+      perColumn.set(column, (perColumn.get(column) ?? 0) + nodeSize(node).height + 22)
+    }
+    laneHeights.set(lane.id, Math.max(176, 76 + Math.max(0, ...perColumn.values())))
+  }
+  let nextLaneY = 30
+  for (const lane of lanes) {
+    laneOffsets.set(lane.id, nextLaneY)
+    nextLaneY += (laneHeights.get(lane.id) ?? 176) + 14
+  }
+
+  lanes.forEach((lane) => {
     const laneId = laneIds.get(lane.id)!
     const x = 30
-    const y = 30 + index * (laneHeight + 14)
+    const y = laneOffsets.get(lane.id) ?? 30
+    const laneHeight = laneHeights.get(lane.id) ?? 176
     cells.push(`<mxCell id="${escapeXml(laneId)}" value="${escapeXml(lane.label)}" style="swimlane;html=1;horizontal=1;startSize=34;rounded=1;fillColor=#F8FAFC;swimlaneFillColor=#FFFFFF;strokeColor=#CBD5E1;fontFamily=Microsoft YaHei;fontSize=14;fontStyle=1;collapsible=0;" vertex="1" parent="1"><mxGeometry x="${x}" y="${y}" width="${laneWidth}" height="${laneHeight}" as="geometry"/></mxCell>`)
   })
 
   const rowBySlot = new Map<string, number>()
+  const heightBySlot = new Map<string, number>()
   plan.nodes.forEach((node) => {
     const cellId = nodeIds.get(node.id)!
     const column = columns.get(node.id) ?? 0
@@ -312,6 +339,8 @@ function compileReplacement(plan: ReplacePlan): string {
     const row = rowBySlot.get(slot) ?? 0
     rowBySlot.set(slot, row + 1)
     const { width, height } = nodeSize(node)
+    const previousHeight = heightBySlot.get(slot) ?? 0
+    heightBySlot.set(slot, previousHeight + height + 22)
     const parent = node.lane ? laneIds.get(node.lane)! : '1'
     let x: number
     let y: number
@@ -320,13 +349,14 @@ function compileReplacement(plan: ReplacePlan): string {
       y = node.y
     } else if (node.lane) {
       x = 68 + column * 190
-      y = 62 + row * 86
+      y = 54 + previousHeight
     } else if (direction === 'TB') {
       x = 100 + row * 196
       y = 70 + column * 116
     } else {
       x = 70 + column * 190
-      y = 80 + row * 100 + Math.max(0, laneIndex) * laneHeight
+      const lanesBottom = lanes.length ? nextLaneY + 16 : 50
+      y = lanesBottom + row * 100 + Math.max(0, laneIndex) * 16
     }
     cells.push(`<mxCell id="${escapeXml(cellId)}" value="${escapeXml(node.label)}" style="${nodeStyle(node.type)}" vertex="1" parent="${escapeXml(parent)}"><mxGeometry x="${x}" y="${y}" width="${width}" height="${height}" as="geometry"/></mxCell>`)
   })
@@ -337,7 +367,10 @@ function compileReplacement(plan: ReplacePlan): string {
   })
 
   const pageName = escapeXml(plan.title ?? 'AI 生成流程图')
-  const pageHeight = Math.max(827, 90 + Math.max(1, lanes.length) * (laneHeight + 14))
+  const rootBottom = plan.nodes
+    .filter((node) => !node.lane)
+    .reduce((maximum, node) => Math.max(maximum, (node.y ?? nextLaneY + 80) + nodeSize(node).height), 0)
+  const pageHeight = Math.max(827, nextLaneY + 70, rootBottom + 90)
   const pageWidth = Math.max(1169, laneWidth + 90)
   return `<mxfile host="embedded" modified="2026-01-01T00:00:00.000Z" agent="Fengsha Diagram" version="1"><diagram id="ai-page-1" name="${pageName}"><mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="${pageWidth}" pageHeight="${pageHeight}" math="0" shadow="0"><root>${cells.join('')}</root></mxGraphModel></diagram></mxfile>`
 }
@@ -454,7 +487,7 @@ export function compileAiDrawioCode(code: string, baseXml: string): string {
     if (error) throw new Error(error)
     return trimmed
   }
-  const plan = parsePlan(trimmed)
+  const plan = parsePlan(isFengshaPlanSource(trimmed) ? fengshaPlanToLegacyDrawioSource(trimmed) : trimmed)
   const result = plan.mode === 'replace' ? compileReplacement(plan) : compilePatch(plan, baseXml)
   const error = validateDrawioXml(result)
   if (error) throw new Error(`本地生成的画布未通过检查：${error}`)

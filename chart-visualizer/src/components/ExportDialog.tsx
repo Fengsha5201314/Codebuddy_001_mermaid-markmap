@@ -8,9 +8,12 @@ import {
   normalizeExportBackground,
   rasterDimensionsSupported,
   recommendedRasterScale,
+  prepareSvgForExport,
 } from '@/lib/export'
+import { assessMermaidDiagram, qualityFailureMessage, type DiagramQualityProfile, type DiagramQualityReceipt } from '@/lib/reliable-diagram-delivery'
 import type { ExportOptions, RenderResult } from '@/types'
 import { Modal } from './Modal'
+import { QualityReceiptSummary } from './QualityReceiptSummary'
 
 interface ExportDialogProps {
   open: boolean
@@ -36,11 +39,14 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
   const [exporting, setExporting] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [quality, setQuality] = useState<DiagramQualityProfile>('professional')
+  const [qualityReceipt, setQualityReceipt] = useState<DiagramQualityReceipt | null>(null)
 
   useEffect(() => {
     if (!open) {
       setCopied(null)
       setError(null)
+      setQualityReceipt(null)
     }
   }, [open])
   const requiresRender = !['mmd', 'markdown'].includes(format)
@@ -61,6 +67,12 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
     setExporting(true)
     setError(null)
     try {
+      if (result && requiresRender) {
+        const canonicalSvg = prepareSvgForExport(result, padding, effectiveBackground, rasterFormat)
+        const receipt = await assessMermaidDiagram(code, result, quality, canonicalSvg)
+        setQualityReceipt(receipt)
+        if (!receipt.ok) throw new Error(qualityFailureMessage(receipt))
+      }
       await exportDiagram(result ?? { svg: '', width: 0, height: 0, kind: 'other' }, code, {
         format,
         fileName: title,
@@ -104,6 +116,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
             <>
               <h3>2. 输出质量</h3>
               <div className="export-control-row">
+                <label><span>验收档位</span><select value={quality} onChange={(event) => setQuality(event.target.value as DiagramQualityProfile)}><option value="professional">专业 · 问题阻止导出</option><option value="standard">标准 · 不确定项提示</option></select></label>
                 {rasterFormat && <label><span>清晰度（按完整画布）</span><select value={scale} onChange={(event) => setScale(Number(event.target.value))}><option value={0}>智能高清 · 长边约 4800px</option>{[1, 2, 3, 4].map((value) => <option key={value} value={value} disabled={Boolean(baseDimensions && !rasterDimensionsSupported(baseDimensions.width, baseDimensions.height, value))}>{value}× {value === 1 ? '标准' : value === 2 ? '高清' : value === 3 ? '超清' : '印刷'}</option>)}</select></label>}
                 <label><span>留白</span><select value={padding} onChange={(event) => setPadding(Number(event.target.value))}><option value={0}>无</option><option value={16}>紧凑</option><option value={32}>标准</option><option value={64}>宽松</option></select></label>
               </div>
@@ -130,6 +143,7 @@ export function ExportDialog({ open, title, code, result, onClose }: ExportDialo
             {exporting ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}
             {exporting ? '正在生成…' : `下载 ${format.toUpperCase()}`}
           </button>
+          <QualityReceiptSummary receipt={qualityReceipt} />
           <div className="copy-row">
             <button onClick={() => handleCopy('svg')} disabled={!result}><Clipboard size={14} />{copied === 'svg' ? '已复制' : '复制 SVG'}</button>
             <button onClick={() => handleCopy('markdown')}><Clipboard size={14} />{copied === 'markdown' ? '已复制' : '复制 Markdown'}</button>

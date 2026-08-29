@@ -30,10 +30,26 @@ describe('CLI argument parser', () => {
     })
   })
 
+  it('builds professional delivery and Mermaid compile requests', () => {
+    expect(parseCliArguments(['deliver', 'process.mmd', '-o', 'process.png', '--receipt', 'receipt.json'], cwd)).toMatchObject({
+      command: 'deliver',
+      receipt: path.resolve(cwd, 'receipt.json'),
+      request: { protocolVersion: 2, operation: 'deliver', quality: 'professional' },
+    })
+    expect(parseCliArguments(['compile', 'plan.json', '--target', 'mermaid'], cwd)).toMatchObject({
+      output: path.resolve(cwd, 'plan.mmd'),
+      request: { operation: 'compile-mermaid' },
+    })
+  })
+
+  it('rejects destructive or misleading path combinations', () => {
+    expect(() => parseCliArguments(['render', 'same.svg', '-o', 'same.svg'], cwd)).toThrow(/不能是同一路径/)
+    expect(() => parseCliArguments(['render', 'source.mmd', '-o', 'wrong.png', '--format', 'svg'], cwd)).toThrow(/扩展名.*不一致/)
+  })
+
   it('rejects ambiguous stdin output and unsupported options', () => {
     expect(() => parseCliArguments(['render', '-'], cwd)).toThrow(CliUsageError)
     expect(() => parseCliArguments(['render', 'a.mmd', '--format', 'bmp'], cwd)).toThrow(/仅支持/)
     expect(() => parseCliArguments(['render', 'a.mmd', '--scale', '9'], cwd)).toThrow(/0.1 到 4/)
   })
 })
-

@@ -1,5 +1,5 @@
 import { detectDiagramKind } from '@/lib/diagram-engine'
-import type { DiagramDocument, DiagramEngine, DiagramProject, DiagramThemeId, DiagramVersion } from '@/types'
+import type { DiagramDocument, DiagramEngine, DiagramLastGood, DiagramProject, DiagramThemeId, DiagramVersion } from '@/types'
 
 export interface WorkspaceBackup {
   schema: 'mermaid-workbench'
@@ -85,6 +85,25 @@ function normalizeVersions(value: unknown, documentEngine: DiagramEngine): Diagr
   }).slice(0, 30)
 }
 
+function normalizeLastGood(value: unknown, engine: DiagramEngine): DiagramLastGood | undefined {
+  if (!isRecord(value) || value.engine !== engine || typeof value.source !== 'string' || !value.source.trim()) return undefined
+  if (value.quality !== 'standard' && value.quality !== 'professional') return undefined
+  const sourceSha256 = boundedText(value.sourceSha256, 64)
+  if (!/^[A-Fa-f0-9]{64}$/.test(sourceSha256)) return undefined
+  const checksPassed = Number(value.checksPassed)
+  const checksTotal = Number(value.checksTotal)
+  if (!Number.isInteger(checksPassed) || !Number.isInteger(checksTotal) || checksPassed < 0 || checksTotal < checksPassed) return undefined
+  return {
+    engine,
+    source: value.source,
+    sourceSha256: sourceSha256.toUpperCase(),
+    quality: value.quality,
+    verifiedAt: validDate(value.verifiedAt, new Date().toISOString()),
+    checksPassed,
+    checksTotal,
+  }
+}
+
 export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
   if (!Array.isArray(value)) return []
   const used = new Set<string>()
@@ -150,6 +169,7 @@ export function normalizeWorkspaceDocuments(value: unknown): DiagramDocument[] {
       createdAt,
       updatedAt,
       versions: normalizeVersions(item.versions, engine),
+      ...(normalizeLastGood(item.lastGood, engine) ? { lastGood: normalizeLastGood(item.lastGood, engine) } : {}),
     }]
   })
 }

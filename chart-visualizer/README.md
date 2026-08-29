@@ -10,13 +10,12 @@
 - AI、脚本与自动化调用：[CLI 图文使用说明](docs/cli-guide.md)
 - 系统维护人员：[产品结构与数据流](docs/architecture.md)
 
-安装 v1.6.0 或更高版本后，在 PowerShell、CMD、Codex 或 Claude Code 中运行：
+安装 v1.9.0 或更高版本后，在 PowerShell、CMD、Codex 或 Claude Code 中运行：
 
 ```powershell
 fengsha-diagram version
-fengsha-diagram validate process.mmd --json
-fengsha-diagram render process.mmd -o process.png --json
+fengsha-diagram visual-check process.mmd --quality professional --json
+fengsha-diagram deliver process.mmd -o process.png --quality professional --receipt process.receipt.json --json
 ```
 
-CLI 会复用桌面端的 Mermaid 校验、中文标签修复、SVG 兼容处理和高清图片导出能力，不需要打开工作台窗口。
-
+CLI 会复用桌面端的 Mermaid/draw.io 质量检查、中文标签修复、SVG 兼容处理和高清图片导出能力，返回可追溯哈希回执；不需要打开工作台窗口。

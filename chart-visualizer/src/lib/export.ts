@@ -2,7 +2,7 @@ import type { ExportOptions, RenderResult } from '@/types'
 import { estimateSvgTextWidth, wrapTextToPixelWidth } from '@/lib/mermaid-label-visibility'
 
 export const MAX_RASTER_DIMENSION = 32767
-export const MAX_RASTER_PIXELS = 100_000_000
+export const MAX_RASTER_PIXELS = 64_000_000
 
 function safeFileName(name: string): string {
   return name.trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').replace(/\s+/g, ' ') || 'diagram'
@@ -301,7 +301,7 @@ export function rasterDimensionsSupported(width: number, height: number, scale: 
 
 export function recommendedRasterScale(width: number, height: number, targetLongEdge = 4800): number {
   const longest = Math.max(1, width, height)
-  let scale = Math.min(4, Math.max(1, targetLongEdge / longest))
+  let scale = Math.min(16, Math.max(1, targetLongEdge / longest))
   while (scale > 1 && !rasterDimensionsSupported(width, height, scale)) scale -= 0.05
   return Math.max(1, Math.floor(scale * 100) / 100)
 }
@@ -400,6 +400,11 @@ export async function renderPreparedSvgToRaster(
   scale: number,
   format: 'png' | 'jpeg',
 ): Promise<Blob> {
+  // Validate before decoding and, crucially, before assigning canvas width and
+  // height: browsers may allocate the backing buffer immediately.
+  if (!rasterDimensionsSupported(width, height, scale)) {
+    throw new Error('图片尺寸超过浏览器限制，请降低清晰度或留白后重试。')
+  }
   const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const image = new Image()
@@ -411,9 +416,6 @@ export async function renderPreparedSvgToRaster(
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.ceil(width * scale))
     canvas.height = Math.max(1, Math.ceil(height * scale))
-    if (!rasterDimensionsSupported(width, height, scale)) {
-      throw new Error('图片尺寸超过浏览器限制，请降低清晰度或留白后重试。')
-    }
     const context = canvas.getContext('2d')
     if (!context) throw new Error('当前浏览器无法创建图片画布。')
     context.drawImage(image, 0, 0, canvas.width, canvas.height)

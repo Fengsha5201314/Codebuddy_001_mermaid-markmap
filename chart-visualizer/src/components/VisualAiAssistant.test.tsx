@@ -173,8 +173,9 @@ describe('Visual AI composer', () => {
     })
 
     expect(requestSignal?.aborted).toBe(false)
-    expect(useAiTaskStore.getState().tasks[aiTaskKey('drawio', firstDocument.id)]?.running).toBe(true)
-    expect(useAiTaskStore.getState().tasks[aiTaskKey('drawio', secondDocument.id)]?.running).not.toBe(true)
+    const tasks = Object.entries(useAiTaskStore.getState().tasks)
+    expect(tasks.some(([key, task]) => key.startsWith(aiTaskKey('drawio', firstDocument.id)) && task.running)).toBe(true)
+    expect(tasks.some(([key, task]) => key.startsWith(aiTaskKey('drawio', secondDocument.id)) && task.running)).toBe(false)
     expect(host.textContent).not.toContain('正在读取画布结构')
   })
 
@@ -265,7 +266,7 @@ describe('Visual AI composer', () => {
       await Promise.resolve()
     })
 
-    expect(host.textContent).toContain('候选已通过结构检查')
+    expect(host.textContent).toContain('候选已通过专业检查')
     await act(async () => {
       host.querySelector<HTMLButtonElement>('.ai-action-buttons .primary')!.click()
     })

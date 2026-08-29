@@ -6,6 +6,11 @@ describe('draw.io XML validation', () => {
     expect(validateDrawioXml('<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>')).toBeNull()
   })
 
+  it('accepts diagrams.net UserObject wrappers used by Mermaid imports', () => {
+    const wrapped = '<mxfile><diagram><mxGraphModel><root><UserObject id="0" label="" mermaidSource="flowchart LR"><mxCell/></UserObject><mxCell id="1" parent="0"/><UserObject id="group" label=""><mxCell vertex="1" parent="1" style="group;transparentBounds=1;"><mxGeometry as="geometry"/></mxCell></UserObject><UserObject id="node" label="开始"><mxCell vertex="1" parent="group"><mxGeometry x="20" y="20" width="100" height="50" as="geometry"/></mxCell></UserObject></root></mxGraphModel></diagram></mxfile>'
+    expect(validateDrawioXml(wrapped)).toBeNull()
+  })
+
   it('rejects malformed or unsafe XML', () => {
     expect(validateDrawioXml('<mxfile>\n<diagram></mxfile>')).toMatch(/格式.*第 2 行|格式.*2:/)
     expect(validateDrawioXml('<!DOCTYPE x [<!ENTITY y SYSTEM "file:///etc/passwd">]><mxfile />')).toContain('外部实体')
@@ -16,5 +21,10 @@ describe('draw.io XML validation', () => {
     expect(validateDrawioXml('<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="same" vertex="1" parent="1"><mxGeometry as="geometry"/></mxCell><mxCell id="same" vertex="1" parent="1"><mxGeometry as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>')).toContain('重复 ID：same')
     expect(validateDrawioXml('<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="edge" edge="1" parent="1" source="missing" target="1"><mxGeometry relative="1" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>')).toContain('不存在的 source：missing')
     expect(validateDrawioXml('<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="node" vertex="1" parent="1"/></root></mxGraphModel></diagram></mxfile>')).toContain('缺少 mxGeometry')
+  })
+
+  it('rejects fake compressed pages and invalid geometry values', () => {
+    expect(validateDrawioXml('<mxfile><diagram id="bad">not-a-graph</diagram></mxfile>')).toContain('不是可识别')
+    expect(validateDrawioXml('<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="node" vertex="1" parent="1"><mxGeometry x="0" y="0" width="NaN" height="30" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>')).toContain('width')
   })
 })

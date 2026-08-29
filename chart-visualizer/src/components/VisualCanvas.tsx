@@ -9,7 +9,10 @@ import {
 } from '@/lib/drawio-bridge'
 import { getOnlineFallback, resolveDrawioRuntime } from '@/lib/drawio-runtime'
 import { EMPTY_DRAWIO_XML } from '@/lib/workspace-data'
+import { validateDrawioXml } from '@/lib/drawio-xml'
 import { toDrawioCompatibleMermaid } from '@/lib/visual-conversion'
+import { assessDrawioDiagram, qualityFailureMessage } from '@/lib/reliable-diagram-delivery'
+import { makePortableDrawioSvg } from '@/lib/portable-drawio-svg'
 import { useWorkspaceStore } from '@/store/workspace-store'
 import type { DiagramDocument } from '@/types'
 import { VisualCanvasShell } from './VisualCanvasShell'
@@ -26,6 +29,40 @@ interface VisualCanvasProps {
   document: DiagramDocument
   onConvertInfo: () => void
   onNotice: (message: string) => void
+}
+
+const CANDIDATE_STABILIZATION_DELAYS_MS = [0, 120, 240, 420, 700, 1_000]
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+}
+
+function hasMeaningfulDrawioSvg(svg: string): boolean {
+  if (svg.length < 800 || !/<svg\b/i.test(svg)) return false
+  const text = svg.match(/<text\b[^>]*>([\s\S]*?)<\/text>/gi) ?? []
+  const visibleText = text.some((item) => item.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').trim().length > 0)
+  const businessShapes = (svg.match(/<(?:rect|path|ellipse|polygon)\b/gi) ?? []).length
+  return visibleText && businessShapes >= 2
+}
+
+async function exportStableCandidate(
+  bridge: DrawioBridge,
+  latestAutosaveXml: () => string | null,
+): Promise<{ xml: string; svg: string }> {
+  for (const milliseconds of CANDIDATE_STABILIZATION_DELAYS_MS) {
+    if (milliseconds) await delay(milliseconds)
+    const xmlResult = await bridge.exportDiagram('xml')
+    const exportedXml = xmlResult.xml || (typeof xmlResult.data === 'string' ? xmlResult.data : '')
+    const autosaveXml = latestAutosaveXml() ?? ''
+    const xml = [exportedXml, autosaveXml].find((candidate) => candidate && !validateDrawioXml(candidate))
+      || exportedXml
+      || autosaveXml
+    const svgResult = await bridge.exportDiagram('svg')
+    const rawSvg = typeof svgResult.data === 'string' ? svgResult.data : svgResult.xml ?? ''
+    const svg = rawSvg ? makePortableDrawioSvg(rawSvg) : ''
+    if (xml && hasMeaningfulDrawioSvg(svg)) return { xml, svg }
+  }
+  throw new Error('draw.io 尚未完成图形渲染，未检测到可交付的文字与图形。')
 }
 
 function getInitialSource(document: DiagramDocument): DrawioSource {
@@ -60,6 +97,9 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
   const pendingMermaidRef = useRef<string | null>(
     needsInitialVisualXmlCapture(document) ? document.sourceMermaid?.trim() ?? null : null,
   )
+  const pendingXmlRef = useRef<string | null>(null)
+  const pendingAutosaveXmlRef = useRef<string | null>(null)
+  const validatingCandidateRef = useRef(needsInitialVisualXmlCapture(document))
   const preferredRuntimeMode = useWorkspaceStore((state) => state.preferences.visualEditorMode)
   const allowOnlineFallback = useWorkspaceStore((state) => state.preferences.visualEditorOnlineFallback)
   const [runtimeMode, setRuntimeMode] = useState(preferredRuntimeMode)
@@ -90,8 +130,9 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
       const bridge = bridgeRef.current
       if (!bridge) throw new Error('可视化画布尚未连接。')
       pendingMermaidRef.current = null
-      lastLocalXmlRef.current = xml
-      useWorkspaceStore.getState().updateVisualSource(xml)
+      pendingXmlRef.current = xml
+      pendingAutosaveXmlRef.current = null
+      validatingCandidateRef.current = true
       connectionStartedRef.current = performance.now()
       setReady(false)
       setStatus('AI 修改已接收，正在重载画布')
@@ -101,6 +142,9 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
       const bridge = bridgeRef.current
       if (!bridge) throw new Error('可视化画布尚未连接。')
       pendingMermaidRef.current = mermaid
+      pendingXmlRef.current = null
+      pendingAutosaveXmlRef.current = null
+      validatingCandidateRef.current = true
       connectionStartedRef.current = performance.now()
       setReady(false)
       setStatus('AI 结构已生成，正在转换为可视化画布')
@@ -127,6 +171,10 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
     setStatus(runtime.loadingTitle)
     connectionStartedRef.current = performance.now()
     lastLocalXmlRef.current = document.drawioXml ?? EMPTY_DRAWIO_XML
+    pendingMermaidRef.current = needsInitialVisualXmlCapture(document) ? document.sourceMermaid?.trim() ?? null : null
+    pendingXmlRef.current = null
+    pendingAutosaveXmlRef.current = null
+    validatingCandidateRef.current = Boolean(pendingMermaidRef.current)
 
     const handleRuntimeFailure = (message: string) => {
       const fallback = getOnlineFallback(runtime, allowOnlineFallback, window.location.href)
@@ -159,29 +207,73 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
       },
       onReady: () => setStatus(runtime.mode === 'local' ? '本地引擎已启动，正在载入图形' : '官方在线引擎已连接，正在载入本地图形'),
       onLoad: () => {
-        setReady(true)
         const elapsed = Math.max(0, performance.now() - connectionStartedRef.current)
-        setStatus(elapsed > 0 ? `画布已就绪 · ${(elapsed / 1000).toFixed(1)}s` : '画布已就绪')
         if (connectionTimerRef.current !== null) window.clearTimeout(connectionTimerRef.current)
         const pendingMermaid = pendingMermaidRef.current
-        if (pendingMermaid) {
-          void bridge.exportDiagram('xml').then((result) => {
-            const xml = result.xml || (typeof result.data === 'string' ? result.data : '')
-            if (!xml || useWorkspaceStore.getState().activeDocumentId !== document.id) return
+        const pendingXml = pendingXmlRef.current
+        if (validatingCandidateRef.current && (pendingMermaid || pendingXml)) {
+          setReady(false)
+          setStatus('图形已载入，正在执行交付前检查')
+          const initialConversion = Boolean(pendingMermaid && document.drawioXml === EMPTY_DRAWIO_XML && !document.lastGood)
+          void exportStableCandidate(bridge, () => pendingAutosaveXmlRef.current).then(({ xml, svg }) => (
+            assessDrawioDiagram(xml, initialConversion ? 'standard' : 'professional', svg)
+              .then((quality) => ({ xml, quality }))
+          )).then(({ xml, quality }) => {
+            if (!quality.ok) throw new Error(qualityFailureMessage(quality))
             pendingMermaidRef.current = null
+            pendingXmlRef.current = null
+            pendingAutosaveXmlRef.current = null
+            validatingCandidateRef.current = false
             lastLocalXmlRef.current = xml
-            useWorkspaceStore.getState().updateVisualSource(xml, pendingMermaid)
-            onNotice(document.drawioXml === EMPTY_DRAWIO_XML ? '可视化画布已建立并自动同步' : 'AI 新画布已应用并自动保存')
-          }).catch(() => onNotice('画布已生成，下次修改时将自动保存'))
+            useWorkspaceStore.getState().commitValidatedCandidate(document.id, xml, {
+              engine: 'drawio',
+              source: xml,
+              sourceSha256: quality.inputSha256,
+              quality: quality.quality,
+              verifiedAt: quality.generatedAt,
+              checksPassed: quality.checks.filter((item) => item.status === 'passed').length,
+              checksTotal: quality.checks.length,
+            }, pendingMermaid ?? undefined)
+            setReady(true)
+            setStatus(elapsed > 0 ? `画布已就绪 · ${(elapsed / 1000).toFixed(1)}s` : '画布已就绪')
+            onNotice(document.drawioXml === EMPTY_DRAWIO_XML ? '可视化画布已校验并自动同步' : 'AI 新画布已通过专业检查并安全应用')
+          }).catch((caught) => {
+            pendingMermaidRef.current = null
+            pendingXmlRef.current = null
+            pendingAutosaveXmlRef.current = null
+            validatingCandidateRef.current = false
+            setReady(false)
+            const trusted = document.lastGood?.engine === 'drawio' ? document.lastGood.source : lastLocalXmlRef.current
+            if (trusted) bridge.load({ type: 'xml', xml: trusted })
+            onNotice(`候选未通过检查，已保留原画布：${caught instanceof Error ? caught.message : '质量检查失败'}`)
+          })
+          return
         }
+        setReady(true)
+        setStatus(elapsed > 0 ? `画布已就绪 · ${(elapsed / 1000).toFixed(1)}s` : '画布已就绪')
       },
       onAutosave: ({ xml }) => {
-        if (useWorkspaceStore.getState().activeDocumentId !== document.id) return
+        if (validatingCandidateRef.current) {
+          pendingAutosaveXmlRef.current = xml
+          return
+        }
         lastLocalXmlRef.current = xml
         setSaving(true)
         setStatus('正在保存')
-        useWorkspaceStore.getState().updateVisualSource(xml, pendingMermaidRef.current ?? undefined)
+        useWorkspaceStore.getState().updateVisualDocument(document.id, xml, pendingMermaidRef.current ?? undefined)
         pendingMermaidRef.current = null
+        void assessDrawioDiagram(xml, 'professional').then((quality) => {
+          if (!quality.ok) return
+          useWorkspaceStore.getState().markLastGood(document.id, {
+            engine: 'drawio',
+            source: xml,
+            sourceSha256: quality.inputSha256,
+            quality: quality.quality,
+            verifiedAt: quality.generatedAt,
+            checksPassed: quality.checks.filter((item) => item.status === 'passed').length,
+            checksTotal: quality.checks.length,
+          })
+        }).catch(() => undefined)
         if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
         saveTimerRef.current = window.setTimeout(() => {
           setSaving(false)
@@ -189,9 +281,9 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
         }, 420)
       },
       onSave: ({ xml }) => {
-        if (useWorkspaceStore.getState().activeDocumentId !== document.id) return
+        if (validatingCandidateRef.current) return
         lastLocalXmlRef.current = xml
-        useWorkspaceStore.getState().updateVisualSource(xml)
+        useWorkspaceStore.getState().updateVisualDocument(document.id, xml)
       },
       onError: (bridgeError) => {
         handleRuntimeFailure(bridgeError.message)

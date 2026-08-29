@@ -167,6 +167,7 @@ try {
   check(exportNotice.includes('\u5df2\u751f\u6210\u5e76\u5f00\u59cb\u4e0b\u8f7d') && exportNotice.endsWith('.svg'), '\u5bfc\u51fa完成后应显示包含文件名的成功提示')
   const download = await downloadPromise
   const exportError = await page.locator('.visual-export-error').textContent().catch(() => null)
+  check(!exportError, `可视化 SVG 专业质量检查或导出失败：${exportError}`)
   await page.waitForFunction(() => Boolean(window.__fengshaLastBlobContent), null, { timeout: 5_000 }).catch(() => undefined)
   const capturedDownloads = await page.evaluate(() => window.__fengshaCapturedDownloads ?? [])
   const capturedBlobContent = await page.evaluate(() => window.__fengshaLastBlobContent ?? '')
@@ -232,15 +233,21 @@ try {
   check(renderProbe.background?.fill === 'rgb(255, 255, 255)', '\u5bfc\u51fa SVG \u7684\u80cc\u666f\u5fc5\u987b\u662f\u4e0d\u900f\u660e\u767d\u8272')
   check(!exportedSvg.includes('<foreignObject'), '\u5bfc\u51fa SVG \u4e0d\u5e94\u4f9d\u8d56 Windows \u67e5\u770b\u5668\u65e0\u6cd5\u7a33\u5b9a\u663e\u793a\u7684 HTML foreignObject')
   check(!exportedSvg.includes('light-dark('), '\u5bfc\u51fa SVG \u4e0d\u5e94\u4fdd\u7559\u67e5\u770b\u5668\u517c\u5bb9\u6027\u4e0d\u7a33\u5b9a\u7684 light-dark \u6837\u5f0f')
+  if (await page.getByText('\u5bfc\u51fa\u53ef\u89c6\u5316\u753b\u5e03').count()) await page.getByRole('button', { name: '\u5173\u95ed' }).click()
   await page.getByRole('button', { name: /\u5bfc\u51fa\u5f53\u524d\u56fe\u8868/ }).click()
   await page.getByRole('radio', { name: /PNG \u56fe\u7247/ }).click()
   await page.getByRole('button', { name: '\u4e0b\u8f7d\u6587\u4ef6' }).click()
-  await page.waitForFunction(() => Boolean(window.__fengshaVisualPngMeta), null, { timeout: 30_000 })
+  await Promise.race([
+    page.waitForFunction(() => Boolean(window.__fengshaVisualPngMeta), null, { timeout: 30_000 }),
+    page.locator('.visual-export-error').waitFor({ state: 'visible', timeout: 30_000 }),
+  ]).catch(() => undefined)
+  const pngExportError = await page.locator('.visual-export-error').textContent().catch(() => null)
+  check(!pngExportError, `可视化 PNG 专业质量检查或导出失败：${pngExportError}`)
   const visualPng = await page.evaluate(() => window.__fengshaVisualPngMeta)
   const viewBoxParts = exportedSvg.match(/\bviewBox=["']([^"']+)["']/i)?.[1].trim().split(/[ ,]+/).map(Number) ?? []
   const sourceWidth = viewBoxParts[2] || 0
   const sourceHeight = viewBoxParts[3] || 0
-  const expectedScale = Math.min(4, Math.max(1, 4800 / Math.max(1, sourceWidth, sourceHeight)))
+  const expectedScale = Math.min(16, Math.max(1, 4800 / Math.max(1, sourceWidth, sourceHeight)))
   check(visualPng?.type === 'image/png', `可视化画布应从统一 SVG 底稿生成真正的 PNG，实际 ${visualPng?.type}`)
   check(visualPng?.width === Math.ceil(sourceWidth * Math.floor(expectedScale * 100) / 100), `可视化画布 PNG 宽度异常，SVG ${sourceWidth}，PNG ${visualPng?.width}`)
   check(visualPng?.height === Math.ceil(sourceHeight * Math.floor(expectedScale * 100) / 100), `可视化画布 PNG 高度异常，SVG ${sourceHeight}，PNG ${visualPng?.height}`)
@@ -253,7 +260,9 @@ try {
   check(await page.getByRole('button', { name: /\u5207\u6362\u5230\u6e90\u7801\u753b\u5e03/ }).count() === 1, '\u753b\u5e03\u5fc5\u987b\u63d0\u4f9b\u660e\u786e\u7684\u201c\u6e90\u7801\u753b\u5e03\u201d\u5207\u6362\u5165\u53e3')
   await aiButton.click()
   await page.locator('.visual-ai-assistant').waitFor({ state: 'visible' })
-  await page.getByText(/\u5df2\u8bc6\u522b\u5f53\u524d\u53ef\u89c6\u5316\u753b\u5e03/).waitFor({ state: 'visible', timeout: 8_000 })
+  await page.getByText(/\u5df2\u8bc6\u522b\u5f53\u524d\u53ef\u89c6\u5316\u753b\u5e03/).waitFor({ state: 'visible', timeout: 8_000 }).catch(() => undefined)
+  const visualContext = await page.locator('.ai-context-strip').textContent().catch(() => '')
+  check(/\u5df2\u8bc6\u522b\u5f53\u524d\u53ef\u89c6\u5316\u753b\u5e03/.test(visualContext || ''), `AI 未取得当前可视化画布：${visualContext}`)
   const screenshotPastePrevented = await page.locator('#visual-ai-prompt').evaluate((textarea) => {
     const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='), (character) => character.charCodeAt(0))
     const clipboard = new DataTransfer()

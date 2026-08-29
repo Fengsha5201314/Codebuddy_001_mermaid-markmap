@@ -11,6 +11,7 @@ import { CLI_EXIT, CLI_HELP, CliUsageError, parseCliArguments } from './args.ts'
 const MAX_INPUT_BYTES = 5 * 1024 * 1024
 
 interface MachineResult {
+  schemaVersion: 'fengsha.cli/result/v1'
   ok: boolean
   command: string
   version: string
@@ -19,6 +20,7 @@ interface MachineResult {
   durationMs?: number
   error?: { category: string; message: string }
   diagram?: Record<string, unknown>
+  receipt?: unknown
 }
 
 function emit(result: MachineResult, json: boolean) {
@@ -40,6 +42,8 @@ function emit(result: MachineResult, json: boolean) {
   const output = result.output ? `\n输出：${result.output}` : ''
   process.stdout.write(`完成：${result.command}${size}${output}\n`)
 }
+
+class WorkerTimeoutError extends Error {}
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = []
@@ -108,9 +112,10 @@ async function runWorker(envelope: CliWorkerEnvelope, timeoutMs: number): Promis
       child.stderr?.on('data', (chunk) => {
         if (stderr.length < 16_384) stderr += String(chunk)
       })
+      let timedOut = false
       const timer = setTimeout(() => {
+        timedOut = true
         child.kill()
-        reject(new Error(`处理超过 ${Math.round(timeoutMs / 1000)} 秒，已安全终止。`))
       }, timeoutMs)
       child.once('error', (error) => {
         clearTimeout(timer)
@@ -118,6 +123,10 @@ async function runWorker(envelope: CliWorkerEnvelope, timeoutMs: number): Promis
       })
       child.once('exit', (code) => {
         clearTimeout(timer)
+        if (timedOut) {
+          reject(new WorkerTimeoutError(`处理超过 ${Math.round(timeoutMs / 1000)} 秒，渲染进程已终止。`))
+          return
+        }
         resolve(code === 0 ? null : stderr.trim() || `渲染进程异常退出（${code ?? 'unknown'}）。`)
       })
     })
@@ -133,6 +142,8 @@ function failureExit(category: CliWorkerResult['category']) {
   if (category === 'validation') return CLI_EXIT.validation
   if (category === 'render') return CLI_EXIT.render
   if (category === 'io') return CLI_EXIT.io
+  if (category === 'quality') return CLI_EXIT.quality
+  if (category === 'timeout') return CLI_EXIT.timeout
   return CLI_EXIT.internal
 }
 
@@ -144,18 +155,18 @@ async function main() {
     parsed = parseCliArguments(argv)
   } catch (error) {
     const message = error instanceof Error ? error.message : '参数不正确。'
-    emit({ ok: false, command: 'usage', version: packageInfo.version, error: { category: 'usage', message } }, wantsJson)
+    emit({ schemaVersion: 'fengsha.cli/result/v1', ok: false, command: 'usage', version: packageInfo.version, error: { category: 'usage', message } }, wantsJson)
     if (!wantsJson) process.stderr.write('\n使用 fengsha-diagram --help 查看完整说明。\n')
     return CLI_EXIT.usage
   }
 
   if (parsed.command === 'help') {
-    if (parsed.json) emit({ ok: true, command: 'help', version: packageInfo.version }, true)
+    if (parsed.json) emit({ schemaVersion: 'fengsha.cli/result/v1', ok: true, command: 'help', version: packageInfo.version }, true)
     else process.stdout.write(CLI_HELP)
     return CLI_EXIT.success
   }
   if (parsed.command === 'version') {
-    emit({ ok: true, command: 'version', version: packageInfo.version }, parsed.json)
+    emit({ schemaVersion: 'fengsha.cli/result/v1', ok: true, command: 'version', version: packageInfo.version }, parsed.json)
     return CLI_EXIT.success
   }
 
@@ -164,56 +175,67 @@ async function main() {
     if (parsed.output && !parsed.force && await exists(parsed.output)) {
       throw new CliUsageError(`输出文件已存在：${parsed.output}；如需覆盖请增加 --force。`)
     }
+    if (parsed.receipt && !parsed.force && await exists(parsed.receipt)) {
+      throw new CliUsageError(`质量回执已存在：${parsed.receipt}；如需覆盖请增加 --force。`)
+    }
     const source = await readSource(parsed.input)
     if (!source.trim()) throw new CliUsageError('输入内容为空。')
     const result = await runWorker({
       request: { ...parsed.request, source },
       outputPath: parsed.output,
       overwrite: parsed.force,
+      receiptPath: parsed.receipt,
     }, parsed.timeoutMs)
     if (!result.ok) {
       emit({
         ok: false,
+        schemaVersion: 'fengsha.cli/result/v1',
         command: parsed.command,
         version: packageInfo.version,
         input: parsed.input,
         output: parsed.output,
         durationMs: Date.now() - startedAt,
         error: { category: result.category ?? 'internal', message: result.message ?? '命令执行失败。' },
+        receipt: result.receipt,
       }, parsed.json)
       return failureExit(result.category)
     }
     emit({
       ok: true,
+      schemaVersion: 'fengsha.cli/result/v1',
       command: parsed.command,
       version: packageInfo.version,
       input: parsed.input,
       output: result.outputPath,
       durationMs: Date.now() - startedAt,
       diagram: result.metadata as Record<string, unknown> | undefined,
+      receipt: result.receipt,
     }, parsed.json)
     return CLI_EXIT.success
   } catch (error) {
     const usage = error instanceof CliUsageError
+    const timeout = error instanceof WorkerTimeoutError
     emit({
       ok: false,
+      schemaVersion: 'fengsha.cli/result/v1',
       command: parsed.command,
       version: packageInfo.version,
       input: parsed.input,
       output: parsed.output,
       durationMs: Date.now() - startedAt,
       error: {
-        category: usage ? 'usage' : 'io',
+        category: usage ? 'usage' : timeout ? 'timeout' : 'io',
         message: error instanceof Error ? error.message : '文件处理失败。',
       },
     }, parsed.json)
-    return usage ? CLI_EXIT.usage : CLI_EXIT.io
+    return usage ? CLI_EXIT.usage : timeout ? CLI_EXIT.timeout : CLI_EXIT.io
   }
 }
 
 void main().then((code) => { process.exitCode = code }).catch((error) => {
   const wantsJson = process.argv.includes('--json')
   emit({
+    schemaVersion: 'fengsha.cli/result/v1',
     ok: false,
     command: 'internal',
     version: packageInfo.version,

@@ -14,6 +14,8 @@ import type { RenderResult } from '@/types'
 
 export interface GeneratedDiagramArtifact {
   data: string | Blob
+  /** Exact portable SVG used for SVG output and as the raster/PDF input. */
+  canonicalSvg: string
   mimeType: string
   extension: string
   result: RenderResult
@@ -77,6 +79,7 @@ export async function generateDiagramArtifact(source: string, options: CliRender
   if (options.format === 'svg') {
     return {
       data: svg,
+      canonicalSvg: svg,
       ...details,
       result,
       outputWidth: Math.ceil(dimensions.width),
@@ -98,5 +101,5 @@ export async function generateDiagramArtifact(source: string, options: CliRender
     ? await pngBlobToPdf(raster, outputWidth, outputHeight)
     : raster
 
-  return { data, ...details, result, outputWidth, outputHeight, scale }
+  return { data, canonicalSvg: svg, ...details, result, outputWidth, outputHeight, scale }
 }

@@ -1,7 +1,13 @@
 import { compileAiDrawioCode } from '@/lib/ai-drawio-plan'
 import { renderDiagram, isRenderError } from '@/lib/diagram-engine'
-import { generateDiagramArtifact } from '@/lib/diagram-artifact'
 import { validateDrawioXml } from '@/lib/drawio-xml'
+import { compileFengshaPlanToMermaid, isFengshaPlanSource } from '@/lib/fengsha-plan'
+import {
+  assessDrawioDiagram,
+  assessMermaidDiagram,
+  deliverMermaidDiagram,
+  qualityFailureMessage,
+} from '@/lib/reliable-diagram-delivery'
 import { getDiagramTheme } from '@/data/themes'
 import type {
   CliArtifactPayload,
@@ -41,7 +47,7 @@ function drawioCounts(xml: string) {
 }
 
 async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResponse> {
-  if (request.protocolVersion !== 1) {
+  if (request.protocolVersion !== 1 && request.protocolVersion !== 2) {
     return { ok: false, category: 'internal', message: '不支持的 CLI 协议版本。' }
   }
   if (request.operation === 'compile-drawio') {
@@ -49,10 +55,13 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
       const xml = compileAiDrawioCode(request.source, '')
       const validationError = validateDrawioXml(xml)
       if (validationError) return { ok: false, category: 'validation', message: validationError }
+      const receipt = await assessDrawioDiagram(xml, request.quality ?? 'professional', xml)
+      if (!receipt.ok) return { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
       return {
         ok: true,
         artifact: textPayload(xml, 'application/vnd.jgraph.mxfile', 'drawio'),
         metadata: drawioCounts(xml),
+        receipt,
       }
     } catch (error) {
       return {
@@ -63,18 +72,61 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
     }
   }
 
+  if (request.operation === 'compile-mermaid') {
+    try {
+      const source = compileFengshaPlanToMermaid(request.source)
+      const rendered = await renderDiagram(source, getDiagramTheme('paper'))
+      const receipt = await assessMermaidDiagram(source, rendered, request.quality ?? 'professional', source)
+      if (!receipt.ok) return { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
+      return {
+        ok: true,
+        artifact: textPayload(source, 'text/plain;charset=utf-8', 'mmd'),
+        metadata: { kind: rendered.kind, width: rendered.width, height: rendered.height },
+        receipt,
+      }
+    } catch (error) {
+      return { ok: false, category: 'validation', message: error instanceof Error ? error.message : '风沙图纸无法编译。' }
+    }
+  }
+
+  if (request.operation === 'visual-check' && /^\s*<mxfile\b/i.test(request.source)) {
+    const receipt = await assessDrawioDiagram(request.source, request.quality ?? 'professional')
+    return receipt.ok
+      ? { ok: true, metadata: drawioCounts(request.source), receipt }
+      : { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
+  }
+
   const options = request.render
   if (!options) return { ok: false, category: 'internal', message: '缺少 Mermaid 渲染参数。' }
   try {
+    const mermaidSource = isFengshaPlanSource(request.source)
+      ? compileFengshaPlanToMermaid(request.source)
+      : request.source
     if (request.operation === 'validate') {
-      const result = await renderDiagram(request.source, getDiagramTheme(options.theme))
+      const result = await renderDiagram(mermaidSource, getDiagramTheme(options.theme))
       return {
         ok: true,
         metadata: { kind: result.kind, width: result.width, height: result.height },
       }
     }
 
-    const artifact = await generateDiagramArtifact(request.source, options)
+    if (request.operation === 'visual-check') {
+      const result = await renderDiagram(mermaidSource, getDiagramTheme(options.theme))
+      const receipt = await assessMermaidDiagram(mermaidSource, result, request.quality ?? 'professional')
+      return receipt.ok
+        ? { ok: true, metadata: { kind: result.kind, width: result.width, height: result.height }, receipt }
+        : { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
+    }
+
+    const delivered = await deliverMermaidDiagram(
+      mermaidSource,
+      options,
+      request.operation === 'deliver' ? request.quality ?? 'professional' : 'standard',
+    )
+    if (!delivered.receipt.ok) {
+      return { ok: false, category: 'quality', message: qualityFailureMessage(delivered.receipt), receipt: delivered.receipt }
+    }
+    const artifact = delivered.artifact
     const payload = typeof artifact.data === 'string'
       ? textPayload(artifact.data, artifact.mimeType, artifact.extension)
       : await blobPayload(artifact.data, artifact.mimeType, artifact.extension)
@@ -89,6 +141,7 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
         outputHeight: artifact.outputHeight,
         scale: artifact.scale,
       },
+      receipt: delivered.receipt,
     }
   } catch (error) {
     const parsed = isRenderError(error) ? error : null

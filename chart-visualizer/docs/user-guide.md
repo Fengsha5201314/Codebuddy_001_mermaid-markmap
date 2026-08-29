@@ -309,11 +309,11 @@ AI 生成或修改且带有 Mermaid 结构时，会同步回同一项目源码�
 
 ## 13. AI 与自动化工具通过 CLI 调用
 
-安装 v1.6.0 或更高版本后，可在 PowerShell、CMD、Codex 或 Claude Code 中运行：
+安装 v1.9.0 或更高版本后，可在 PowerShell、CMD、Codex 或 Claude Code 中运行可靠交付命令：
 
 ```powershell
-fengsha-diagram validate process.mmd --json
-fengsha-diagram render process.mmd -o process.png --json
+fengsha-diagram visual-check process.mmd --quality professional --json
+fengsha-diagram deliver process.mmd -o process.png --quality professional --receipt process.receipt.json --json
 ```
 
 CLI 不会打开可见窗口，不读取桌面图表项目和 AI Key，且与桌面端共用同一套校验、中文文字修复和高清导出内核。完整命令、JSON 格式、退出码、draw.io 计划格式和 AI 调用模板见 [CLI 图文使用说明](cli-guide.md)。

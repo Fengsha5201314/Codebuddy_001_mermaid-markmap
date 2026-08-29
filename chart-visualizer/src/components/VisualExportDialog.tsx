@@ -3,7 +3,9 @@ import { Check, Download, FileImage, FileType2, LoaderCircle, Network } from 'lu
 import type { DrawioExportFormat, DrawioExportResult } from '@/lib/drawio-bridge'
 import { makePortableDrawioSvg } from '@/lib/portable-drawio-svg'
 import { rasterizeSvgMarkup } from '@/lib/export'
+import { assessDrawioDiagram, qualityFailureMessage, type DiagramQualityProfile, type DiagramQualityReceipt } from '@/lib/reliable-diagram-delivery'
 import { Modal } from './Modal'
+import { QualityReceiptSummary } from './QualityReceiptSummary'
 
 type VisualDeliveryFormat = 'xml' | 'svg' | 'png' | 'pdf'
 
@@ -100,22 +102,28 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
   const [format, setFormat] = useState<VisualDeliveryFormat>('xml')
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [quality, setQuality] = useState<DiagramQualityProfile>('professional')
+  const [qualityReceipt, setQualityReceipt] = useState<DiagramQualityReceipt | null>(null)
 
   useEffect(() => {
     if (!open) {
       setExporting(false)
       setError(null)
+      setQualityReceipt(null)
     }
   }, [open])
 
   const download = async () => {
     setExporting(true)
     setError(null)
+    let qualityRejected = false
     try {
       // Use one normalized SVG as the canonical source for SVG, PNG and PDF.
       // This keeps text weight, line breaks, colors and compatibility identical.
+      const xmlResult = await onExport('xml')
+      const latestXml = xmlResult.xml || (typeof xmlResult.data === 'string' ? xmlResult.data : '') || fallbackXml
       const requestFormat: DrawioExportFormat = format === 'xml' ? 'xml' : 'svg'
-      const result = await onExport(requestFormat)
+      const result = format === 'xml' ? xmlResult : await onExport(requestFormat)
       const extensions: Record<VisualDeliveryFormat, string> = { xml: 'drawio', svg: 'svg', png: 'png', pdf: 'pdf' }
       const mimes: Record<VisualDeliveryFormat, string> = {
         xml: 'application/vnd.jgraph.mxfile',
@@ -124,12 +132,18 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
         pdf: 'application/pdf',
       }
       const raw = format === 'xml'
-        ? result.xml ?? (typeof result.data === 'string' ? result.data : fallbackXml)
+        ? latestXml
         : typeof result.data === 'string'
           ? result.data
           : result.xml
       if (!raw) throw new Error('画布没有返回可下载内容，请稍后重试。')
       const portableSvg = format === 'xml' ? '' : makePortableDrawioSvg(raw)
+      const receipt = await assessDrawioDiagram(latestXml, quality, format === 'xml' ? latestXml : portableSvg)
+      setQualityReceipt(receipt)
+      if (!receipt.ok) {
+        qualityRejected = true
+        throw new Error(qualityFailureMessage(receipt))
+      }
       const raster = format === 'png' || format === 'pdf'
         ? await rasterizeSvgMarkup(portableSvg)
         : null
@@ -145,7 +159,7 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
       onClose()
       onSuccess(fileName)
     } catch (downloadError) {
-      if (format === 'xml' && fallbackXml.trim()) {
+      if (!qualityRejected && format === 'xml' && fallbackXml.trim()) {
         const fileName = `${safeName(title)}.drawio`
         triggerDownload(fallbackXml, fileName, 'application/vnd.jgraph.mxfile')
         onClose()
@@ -177,10 +191,12 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
           <Network size={24} />
           <strong>{title}</strong>
           <p>{format === 'xml' ? '保留图形、连接线、样式和页面结构，可在本工具或 diagrams.net 中继续编辑。' : '导出前会读取画布中的最新内容，确保修改已包含在交付文件中。'}</p>
+          <label className="visual-export-quality"><span>验收档位</span><select value={quality} onChange={(event) => setQuality(event.target.value as DiagramQualityProfile)}><option value="professional">专业 · 问题阻止导出</option><option value="standard">标准 · 不确定项提示</option></select></label>
           <button onClick={download} disabled={exporting}>
             {exporting ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
             {exporting ? '正在生成…' : '下载文件'}
           </button>
+          <QualityReceiptSummary receipt={qualityReceipt} />
           {error && <small className="visual-export-error">{error}</small>}
         </div>
       </div>

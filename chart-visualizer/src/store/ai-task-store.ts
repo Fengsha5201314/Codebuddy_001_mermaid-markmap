@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import type { AiWorkflowStage } from '@/lib/ai-diagram-workflow'
 
 export type AiTaskEngine = 'mermaid' | 'drawio'
@@ -31,7 +32,7 @@ interface AiTaskRuntime {
 
 const runtimes = new Map<string, AiTaskRuntime>()
 
-export const useAiTaskStore = create<AiTaskState>((set) => ({
+export const useAiTaskStore = create<AiTaskState>()(persist((set) => ({
   tasks: {},
   patchTask: (taskKey, patch) => set((state) => ({
     tasks: {
@@ -42,10 +43,26 @@ export const useAiTaskStore = create<AiTaskState>((set) => ({
       } as AiTaskSnapshot,
     },
   })),
+}), {
+  name: 'fengsha-ai-tasks-v1',
+  partialize: (state) => ({ tasks: state.tasks }),
+  merge: (persistedState, currentState) => {
+    const saved = persistedState as { tasks?: Record<string, AiTaskSnapshot> } | undefined
+    const tasks = Object.fromEntries(Object.entries(saved?.tasks ?? {}).map(([key, task]) => [key, task.running
+      ? {
+          ...task,
+          running: false,
+          workflowStage: 'failed' as const,
+          requestError: task.requestError || '应用在任务执行期间关闭，已保留中断前输出；请重新发送以继续。',
+          completedAt: task.completedAt ?? new Date().toISOString(),
+        }
+      : task]))
+    return { ...currentState, tasks }
+  },
 }))
 
-export function aiTaskKey(engine: AiTaskEngine, documentId: string): string {
-  return `${engine}:${documentId}`
+export function aiTaskKey(engine: AiTaskEngine, documentId: string, threadId?: string): string {
+  return `${engine}:${documentId}${threadId ? `:${threadId}` : ''}`
 }
 
 export function beginAiTask(
@@ -132,4 +149,9 @@ export function resetAiTaskStoreForTests(): void {
   }
   runtimes.clear()
   useAiTaskStore.setState({ tasks: {} })
+  try {
+    localStorage.removeItem('fengsha-ai-tasks-v1')
+  } catch {
+    // Some non-browser test environments intentionally do not expose storage.
+  }
 }

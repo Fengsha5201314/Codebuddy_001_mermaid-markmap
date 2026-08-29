@@ -29,6 +29,7 @@ import {
 } from '@/lib/inline-edit'
 import { useWorkspaceStore } from '@/store/workspace-store'
 import { findClippedRenderedNodeLabelDetails, repairMermaidLabelVisibility } from '@/lib/mermaid-label-visibility'
+import { assessMermaidDiagram } from '@/lib/reliable-diagram-delivery'
 import type { RenderError, RenderResult } from '@/types'
 
 interface PreviewCanvasProps {
@@ -242,6 +243,19 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
           setError(null)
           onError(null)
           onResult(rendered)
+          void assessMermaidDiagram(active.code, rendered, 'professional').then((quality) => {
+            if (request === requestRef.current && quality.ok) {
+              useWorkspaceStore.getState().markLastGood(active.id, {
+                engine: 'mermaid',
+                source: active.code,
+                sourceSha256: quality.inputSha256,
+                quality: quality.quality,
+                verifiedAt: quality.generatedAt,
+                checksPassed: quality.checks.filter((item) => item.status === 'passed').length,
+                checksTotal: quality.checks.length,
+              })
+            }
+          }).catch(() => undefined)
         }
         setRenderTime(Math.round(performance.now() - started))
         if (fitModeRef.current) window.requestAnimationFrame(() => fit(rendered))
@@ -257,6 +271,19 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
           setResult(null)
           setError(normalized)
           onError(normalized)
+          const fallback = active.lastGood?.engine === 'mermaid' ? active.lastGood.source : ''
+          if (fallback && fallback !== active.code) {
+            try {
+              const trusted = await renderDiagram(fallback, getDiagramTheme(active.themeId))
+              if (request === requestRef.current) {
+                displayedResultRef.current = trusted
+                setLastGoodResult(trusted)
+              }
+            } catch {
+              // A persisted last-good entry is advisory; never mask the real
+              // current-source error if a renderer upgrade invalidates it.
+            }
+          }
         }
         onResult(null)
       } finally {

@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react'
 import { getDiagramTheme } from '@/data/themes'
+import { compileFengshaPlanToMermaid, isFengshaPlanSource } from '@/lib/fengsha-plan'
 import {
   aiModelKey,
   getAiLineStats,
@@ -32,6 +33,11 @@ import type { AiAttachment } from '@/lib/ai-contract'
 import { DEFAULT_AI_DIAGRAM_ACTION, runAiDiagramWorkflow } from '@/lib/ai-diagram-workflow'
 import { appendAiPrompt, type AiPromptTemplate } from '@/lib/ai-prompt-templates'
 import { renderDiagram } from '@/lib/diagram-engine'
+import {
+  assessMermaidDiagram,
+  qualityFailureMessage,
+  type DiagramQualityReceipt,
+} from '@/lib/reliable-diagram-delivery'
 import { usePromptTemplateStore } from '@/store/prompt-template-store'
 import { buildAiConversationContext, useAiConversationStore } from '@/store/ai-conversation-store'
 import { useWorkspaceStore } from '@/store/workspace-store'
@@ -50,6 +56,7 @@ import { AiAttachmentPicker } from '@/components/AiAttachmentPicker'
 import { appendAiAttachmentFiles, buildConversationAttachments, imageFilesFromClipboard } from '@/lib/ai-attachments'
 import { modelSupportsVision } from '@/lib/provider-settings'
 import { AiConversationPanel, AiTemplateMenu } from '@/components/AiConversationPanel'
+import { QualityReceiptSummary } from '@/components/QualityReceiptSummary'
 
 interface AiAssistantProps {
   renderError: RenderError | null
@@ -66,6 +73,7 @@ interface AiCandidate {
   documentId: string
   baseCode: string
   repairAttempts: number
+  qualityReceipt: DiagramQualityReceipt | null
 }
 
 const providerLabels: Record<AiProviderId, string> = {
@@ -128,7 +136,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
   const preferences = useWorkspaceStore((state) => state.preferences)
   const updatePreferences = useWorkspaceStore((state) => state.updatePreferences)
   const updateCode = useWorkspaceStore((state) => state.updateCode)
-  const createVersion = useWorkspaceStore((state) => state.createVersion)
+  const commitValidatedCandidate = useWorkspaceStore((state) => state.commitValidatedCandidate)
   const active = documents.find((document) => document.id === activeId)
   const threads = useAiConversationStore((state) => state.threads)
   const activeThreadByProject = useAiConversationStore((state) => state.activeThreadByProject)
@@ -143,7 +151,8 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<AiAttachment[]>([])
   const projectId = active?.projectId ?? ''
-  const taskKey = aiTaskKey('mermaid', activeId ?? 'none')
+  const activeThreadId = activeThreadByProject[projectId]
+  const taskKey = aiTaskKey('mermaid', activeId ?? 'none', activeThreadId ?? 'default')
   const task = useAiTaskStore((state) => state.tasks[taskKey])
   const running = task?.running ?? false
   const candidate = (task?.candidate as AiCandidate | null | undefined) ?? null
@@ -153,7 +162,6 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
   const streamText = task?.streamText ?? ''
   const workflowStage = task?.workflowStage ?? null
   const projectThreads = threads.filter((thread) => thread.projectId === projectId)
-  const activeThreadId = activeThreadByProject[projectId]
   const activeThread = projectThreads.find((thread) => thread.id === activeThreadId)
 
   useEffect(() => {
@@ -235,10 +243,17 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
     const controller = beginAiTask(taskKey, 'mermaid', documentId, preserveCandidate)
     onPreviewCandidate?.(null)
     try {
+      let qualityReceipt: DiagramQualityReceipt | null = null
       const result = await runAiDiagramWorkflow({
         payload,
         request: (requestPayload, onDelta, signal) => requestAiChangeStream(requestPayload, onDelta ?? (() => undefined), signal),
-        validate: (code) => renderDiagram(code, getDiagramTheme(active.themeId)),
+        prepare: (code) => isFengshaPlanSource(code) ? compileFengshaPlanToMermaid(code) : code,
+        validate: async (code) => {
+          const rendered = await renderDiagram(code, getDiagramTheme(active.themeId))
+          qualityReceipt = await assessMermaidDiagram(code, rendered, 'professional')
+          if (!qualityReceipt.ok) throw new Error(qualityFailureMessage(qualityReceipt))
+          return qualityReceipt
+        },
         onDelta: (delta) => {
           appendAiTaskDelta(taskKey, delta)
         },
@@ -264,8 +279,9 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
           added: stats.added,
           removed: stats.removed,
           validationError: result.validationError,
-          repairAttempts: result.repairAttempts,
-        } satisfies AiCandidate,
+           repairAttempts: result.repairAttempts,
+           qualityReceipt,
+         } satisfies AiCandidate,
         candidateStale: false,
       })
     } catch (error) {
@@ -346,6 +362,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
   const canApply = candidate
     && !isExplanation
     && !candidate.validationError
+    && candidate.qualityReceipt?.ok === true
     && !candidateStale
     && !candidateConflict
     && candidate.documentId === active.id
@@ -431,6 +448,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
               <small>{candidate.response.provider === selectedModel?.provider ? selectedProviderLabel : providerLabels[candidate.response.provider]} · {candidate.response.model}</small>
             </header>
             <p className="ai-result-summary">{candidate.response.summary}</p>
+            <QualityReceiptSummary receipt={candidate.qualityReceipt} />
             {!isExplanation && (
               <>
                 <div className="ai-diff-stats"><span className="added">+{candidate.added} 行</span><span className="removed">−{candidate.removed} 行</span><span>尚未写入源码</span></div>
@@ -465,7 +483,20 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
                 ) : (
                   <>
                     {onPreviewCandidate && <button type="button" onClick={() => onPreviewCandidate(candidate.response.code)}>查看候选</button>}
-                    <button type="button" className="primary" disabled={!canApply} onClick={() => { createVersion('AI 修改前'); patchAiTask(taskKey, { appliedBefore: active.code }); updateCode(candidate.response.code); onPreviewCandidate?.(null) }}><Check size={14} />应用到画布</button>
+                    <button type="button" className="primary" disabled={!canApply} onClick={() => {
+                      const quality = candidate.qualityReceipt!
+                      patchAiTask(taskKey, { appliedBefore: active.code })
+                      commitValidatedCandidate(active.id, candidate.response.code, {
+                        engine: 'mermaid',
+                        source: candidate.response.code,
+                        sourceSha256: quality.inputSha256,
+                        quality: quality.quality,
+                        verifiedAt: quality.generatedAt,
+                        checksPassed: quality.checks.filter((item) => item.status === 'passed').length,
+                        checksTotal: quality.checks.length,
+                      })
+                      onPreviewCandidate?.(null)
+                    }}><Check size={14} />应用到画布</button>
                   </>
                 )}
               </>

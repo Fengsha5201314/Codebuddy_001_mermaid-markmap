@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware'
 import { defaultTemplate, getTemplate } from '@/data/templates'
 import { detectDiagramKind } from '@/lib/diagram-engine'
 import { EMPTY_DRAWIO_XML, normalizeWorkspaceDocuments, normalizeWorkspaceProjects } from '@/lib/workspace-data'
-import type { DiagramDocument, DiagramProject, DiagramThemeId, DiagramVersion, WorkspacePreferences, WorkspaceView } from '@/types'
+import type { DiagramDocument, DiagramLastGood, DiagramProject, DiagramThemeId, DiagramVersion, WorkspacePreferences, WorkspaceView } from '@/types'
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -65,6 +65,9 @@ interface WorkspaceState {
   updateActiveDocument: (patch: Partial<Omit<DiagramDocument, 'id' | 'createdAt'>>) => void
   updateCode: (code: string) => void
   updateVisualSource: (drawioXml: string, sourceMermaid?: string) => void
+  updateVisualDocument: (documentId: string, drawioXml: string, sourceMermaid?: string) => void
+  markLastGood: (documentId: string, value: DiagramLastGood) => void
+  commitValidatedCandidate: (documentId: string, source: string, value: DiagramLastGood, sourceMermaid?: string) => boolean
   setTheme: (themeId: DiagramThemeId) => void
   toggleFavorite: (id: string) => void
   duplicateDocument: (id: string) => string | undefined
@@ -287,9 +290,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       },
 
       updateVisualSource: (drawioXml, sourceMermaid) => {
+        get().updateVisualDocument(get().activeDocumentId, drawioXml, sourceMermaid)
+      },
+
+      updateVisualDocument: (documentId, drawioXml, sourceMermaid) => {
         if (!drawioXml.trim()) return
-        const activeId = get().activeDocumentId
-        const active = get().documents.find((document) => document.id === activeId && document.engine === 'drawio')
+        const active = get().documents.find((document) => document.id === documentId && document.engine === 'drawio')
+        if (!active) return
         const timestamp = now()
         set((state) => ({
           projects: active
@@ -299,7 +306,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             if (sourceMermaid !== undefined && active?.sourceDocumentId === document.id && document.engine === 'mermaid') {
               return { ...document, code: sourceMermaid, kind: detectDiagramKind(sourceMermaid), updatedAt: timestamp }
             }
-            if (document.id !== activeId || document.engine !== 'drawio') return document
+            if (document.id !== documentId || document.engine !== 'drawio') return document
             if (sourceMermaid === undefined) {
               return { ...document, drawioXml, updatedAt: timestamp }
             }
@@ -313,6 +320,65 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             }
           }),
         }))
+      },
+
+      markLastGood: (documentId, value) => {
+        set((state) => ({
+          documents: state.documents.map((document) => document.id === documentId
+            ? { ...document, lastGood: value }
+            : document),
+        }))
+      },
+
+      commitValidatedCandidate: (documentId, source, value, sourceMermaid) => {
+        const current = get().documents.find((document) => document.id === documentId)
+        if (!current || current.engine !== value.engine || !source.trim()) return false
+        const timestamp = now()
+        set((state) => ({
+          projects: state.projects.map((project) => project.id === current.projectId
+            ? { ...project, updatedAt: timestamp }
+            : project),
+          documents: state.documents.map((document) => {
+            if (sourceMermaid !== undefined && current.engine === 'drawio' && current.sourceDocumentId === document.id && document.engine === 'mermaid') {
+              return { ...document, code: sourceMermaid, kind: detectDiagramKind(sourceMermaid), updatedAt: timestamp }
+            }
+            if (document.id !== documentId) return document
+            const snapshot: DiagramVersion = {
+              id: id('version'),
+              engine: document.engine,
+              code: document.code,
+              ...(document.engine === 'drawio' ? {
+                drawioXml: document.drawioXml ?? EMPTY_DRAWIO_XML,
+                ...(document.sourceMermaid !== undefined ? { sourceMermaid: document.sourceMermaid } : {}),
+              } : {}),
+              createdAt: timestamp,
+              label: '候选应用前',
+            }
+            if (document.engine === 'mermaid') {
+              return {
+                ...document,
+                code: source,
+                kind: detectDiagramKind(source),
+                lastGood: value,
+                versions: [snapshot, ...document.versions].slice(0, 30),
+                updatedAt: timestamp,
+              }
+            }
+            return {
+              ...document,
+              drawioXml: source,
+              ...(sourceMermaid !== undefined ? {
+                code: sourceMermaid,
+                sourceMermaid,
+                kind: detectDiagramKind(sourceMermaid),
+              } : {}),
+              lastGood: value,
+              versions: [snapshot, ...document.versions].slice(0, 30),
+              updatedAt: timestamp,
+            }
+          }),
+        }))
+        return true
       },
 
       setTheme: (themeId) => get().updateActiveDocument({ themeId }),

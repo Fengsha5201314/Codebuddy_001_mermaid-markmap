@@ -47,7 +47,13 @@ import type { AiAttachment } from '@/lib/ai-contract'
 import type { DiagramDocument } from '@/types'
 import { AiAttachmentPicker } from '@/components/AiAttachmentPicker'
 import { AiConversationPanel, AiTemplateMenu } from '@/components/AiConversationPanel'
+import { QualityReceiptSummary } from '@/components/QualityReceiptSummary'
 import { modelSupportsVision } from '@/lib/provider-settings'
+import {
+  assessDrawioDiagram,
+  qualityFailureMessage,
+  type DiagramQualityReceipt,
+} from '@/lib/reliable-diagram-delivery'
 
 interface VisualAiAssistantProps {
   document: DiagramDocument
@@ -63,6 +69,7 @@ interface VisualCandidate {
   repairAttempts: number
   documentId: string
   baseXml: string
+  qualityReceipt: DiagramQualityReceipt | null
 }
 
 const providerLabels: Record<AiProviderId, string> = {
@@ -89,7 +96,6 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const promptTemplates = usePromptTemplateStore((state) => state.templates)
   const preferences = useWorkspaceStore((state) => state.preferences)
   const updatePreferences = useWorkspaceStore((state) => state.updatePreferences)
-  const createVersion = useWorkspaceStore((state) => state.createVersion)
   const threads = useAiConversationStore((state) => state.threads)
   const activeThreadByProject = useAiConversationStore((state) => state.activeThreadByProject)
   const ensureThread = useAiConversationStore((state) => state.ensureThread)
@@ -102,7 +108,8 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const [statusError, setStatusError] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<AiAttachment[]>([])
-  const taskKey = aiTaskKey('drawio', document.id)
+  const activeThreadId = activeThreadByProject[document.projectId]
+  const taskKey = aiTaskKey('drawio', document.id, activeThreadId ?? 'default')
   const task = useAiTaskStore((state) => state.tasks[taskKey])
   const running = task?.running ?? false
   const streamText = task?.streamText ?? ''
@@ -112,7 +119,6 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const requestError = task?.requestError ?? null
   const applied = task?.applied ?? false
   const projectThreads = threads.filter((thread) => thread.projectId === document.projectId)
-  const activeThreadId = activeThreadByProject[document.projectId]
   const activeThread = projectThreads.find((thread) => thread.id === activeThreadId)
 
   useEffect(() => {
@@ -203,6 +209,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
     const requestCode = options?.requestCode ?? currentXml
     const compileBaseXml = options?.compileBaseXml ?? currentXml
     try {
+      let qualityReceipt: DiagramQualityReceipt | null = null
       const payload = {
         action: options?.action ?? 'auto',
         prompt: userPrompt,
@@ -222,6 +229,8 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         validate: async (code) => {
           const error = validateDrawioXml(code)
           if (error) throw new Error(error)
+          qualityReceipt = await assessDrawioDiagram(code, 'professional')
+          if (!qualityReceipt.ok) throw new Error(qualityFailureMessage(qualityReceipt))
         },
         onDelta: (delta) => {
           appendAiTaskDelta(taskKey, delta)
@@ -244,8 +253,9 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
           validationError: result.validationError,
           repairAttempts: result.repairAttempts,
           documentId: document.id,
-          baseXml: documentXml,
-        } satisfies VisualCandidate,
+           baseXml: documentXml,
+           qualityReceipt,
+         } satisfies VisualCandidate,
         candidateStale: false,
       })
     } catch (error) {
@@ -264,6 +274,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const canApply = candidate
     && candidate.response.action !== 'explain'
     && !candidate.validationError
+    && candidate.qualityReceipt?.ok === true
     && !candidateStale
     && !candidateConflict
     && candidate.documentId === document.id
@@ -316,14 +327,14 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         {running && <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite"><header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选内容和具体错误交给 AI，无需手工检查。' : streamText ? '完成后会先校验，不会立即覆盖。' : '正在等待模型返回首段内容。'}</small></span></header>{streamText && <pre>{visualAiStreamPreview(streamText)}<i aria-hidden="true" /></pre>}</div>}
         {!running && requestError && streamText && <div className="ai-running-card interrupted"><header><AlertCircle size={18} /><span><strong>已保留中断前的输出</strong><small>你仍可查看模型已经返回的文字，重新发送后会从新请求继续。</small></span></header><pre>{visualAiStreamPreview(streamText)}</pre></div>}
         {requestError && <div className="ai-error-card"><AlertCircle size={16} /><span><strong>本次请求没有完成</strong><small>{requestError}</small></span></div>}
-        {candidate && <section className={`ai-result-card ${candidate.validationError ? 'invalid' : ''} ${candidateStale || candidateConflict ? 'stale' : ''}`}><header><span className="ai-result-status">{candidate.validationError || candidateStale || candidateConflict ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}<strong>{candidateStale ? '已有新意见，候选需要更新' : candidateConflict ? '当前画布已变化，需要重新生成' : candidate.response.action === 'explain' ? '分析完成' : candidate.validationError ? '自动修复仍未通过' : candidate.repairAttempts ? '已自动修复并通过检查' : '候选已通过结构检查'}</strong></span><small>{selectedProvider?.label || providerLabels[candidate.response.provider]} · {candidate.response.model}</small></header><p className="ai-result-summary">{candidate.response.summary}</p>{candidate.response.changes.length > 0 && <ul className="ai-change-list">{candidate.response.changes.map((change, index) => <li key={`${change}-${index}`}><Check size={12} />{change}</li>)}</ul>}{candidate.validationError && <p className="ai-validation-error">{candidate.validationError}</p>}</section>}
+        {candidate && <section className={`ai-result-card ${candidate.validationError ? 'invalid' : ''} ${candidateStale || candidateConflict ? 'stale' : ''}`}><header><span className="ai-result-status">{candidate.validationError || candidateStale || candidateConflict ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}<strong>{candidateStale ? '已有新意见，候选需要更新' : candidateConflict ? '当前画布已变化，需要重新生成' : candidate.response.action === 'explain' ? '分析完成' : candidate.validationError ? '自动修复仍未通过' : candidate.repairAttempts ? '已自动修复并通过检查' : '候选已通过专业检查'}</strong></span><small>{selectedProvider?.label || providerLabels[candidate.response.provider]} · {candidate.response.model}</small></header><p className="ai-result-summary">{candidate.response.summary}</p><QualityReceiptSummary receipt={candidate.qualityReceipt} />{candidate.response.changes.length > 0 && <ul className="ai-change-list">{candidate.response.changes.map((change, index) => <li key={`${change}-${index}`}><Check size={12} />{change}</li>)}</ul>}{candidate.validationError && <p className="ai-validation-error">{candidate.validationError}</p>}</section>}
       </AiConversationPanel>
 
       {!running && (candidate || hasAssistantReply) && (
         <section className={`ai-action-dock ${candidate && !candidate.validationError && !candidateStale && !candidateConflict ? 'ready' : ''}`} aria-label="AI 下一步操作">
           <div>{applied ? <CheckCircle2 size={17} /> : candidateStale || candidateConflict || candidate?.validationError ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}<span><strong>{applied ? '候选已应用到可视化画布' : candidateStale ? '先按新意见更新候选' : candidateConflict ? '画布已在候选生成后发生变化' : candidate?.validationError ? '候选仍需修复' : candidate ? '候选已校验，可以安全应用' : '已有对话共识，可以生成候选'}</strong><small>{applied ? '应用前版本已自动保存，可从版本页回退。' : candidate ? '当前画布不会被直接覆盖。' : prompt.trim() ? '先发送输入框里的补充内容。' : '也可以继续输入，进一步补充细节。'}</small></span></div>
           <span className="ai-action-buttons">
-            {!applied && candidate ? <><button type="button" onClick={() => patchAiTask(taskKey, { candidate: null, candidateStale: false })}>放弃候选</button>{candidate.validationError ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '修复当前候选中的结构错误，保持已经确认的业务流程不变。', appendUser: false, action: 'fix', requestCode: candidate.response.code, compileBaseXml: candidate.baseXml })}><RefreshCw size={14} />修复候选</button> : candidateStale || candidateConflict ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求更新可视化画布候选。', appendUser: false })}><RefreshCw size={14} />更新候选</button> : candidate.response.action !== 'explain' && <button type="button" className="primary" disabled={!canApply} onClick={() => { createVersion('AI 修改前'); if (candidate.mode === 'mermaid') onApplyMermaid(candidate.response.code); else onApplyXml(candidate.response.code); patchAiTask(taskKey, { applied: true }) }}><Check size={14} />应用到画布</button>}</> : !candidate && <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成可视化画布候选。', appendUser: false })}><Send size={14} />生成候选</button>}
+            {!applied && candidate ? <><button type="button" onClick={() => patchAiTask(taskKey, { candidate: null, candidateStale: false })}>放弃候选</button>{candidate.validationError ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '修复当前候选中的结构错误，保持已经确认的业务流程不变。', appendUser: false, action: 'fix', requestCode: candidate.response.code, compileBaseXml: candidate.baseXml })}><RefreshCw size={14} />修复候选</button> : candidateStale || candidateConflict ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求更新可视化画布候选。', appendUser: false })}><RefreshCw size={14} />更新候选</button> : candidate.response.action !== 'explain' && <button type="button" className="primary" disabled={!canApply} onClick={() => { if (candidate.mode === 'mermaid') onApplyMermaid(candidate.response.code); else onApplyXml(candidate.response.code); patchAiTask(taskKey, { applied: true }) }}><Check size={14} />应用到画布</button>}</> : !candidate && <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成可视化画布候选。', appendUser: false })}><Send size={14} />生成候选</button>}
           </span>
         </section>
       )}

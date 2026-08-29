@@ -41,6 +41,16 @@ export interface DiagramVersion {
   label: string
 }
 
+export interface DiagramLastGood {
+  engine: DiagramEngine
+  source: string
+  sourceSha256: string
+  quality: 'standard' | 'professional'
+  verifiedAt: string
+  checksPassed: number
+  checksTotal: number
+}
+
 export interface DiagramDocument {
   id: string
   /** Project container. Mermaid and draw.io views of one diagram share this project. */
@@ -66,6 +76,8 @@ export interface DiagramDocument {
   createdAt: string
   updatedAt: string
   versions: DiagramVersion[]
+  /** Last source that completed the shared deterministic quality checks. */
+  lastGood?: DiagramLastGood
 }
 
 export interface DiagramTemplate {

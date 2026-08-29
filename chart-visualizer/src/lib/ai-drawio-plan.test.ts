@@ -112,4 +112,28 @@ describe('AI draw.io plan compiler', () => {
     expect(parsed.querySelectorAll('mxCell[vertex="1"]')).toHaveLength(85)
     expect(parsed.querySelectorAll('mxCell[edge="1"]')).toHaveLength(79)
   })
+
+  it('grows lanes and nodes instead of placing dense content outside the lane', () => {
+    const plan = JSON.stringify({
+      version: 1,
+      mode: 'replace',
+      lanes: [{ id: 'lane', label: '业务部门' }],
+      nodes: Array.from({ length: 3 }, (_, index) => ({
+        id: `node-${index}`,
+        type: 'process',
+        label: index === 0 ? '这是一个需要多行完整显示的超长中文业务节点内容，用来验证高度会自动增长' : `节点 ${index}`,
+        lane: 'lane',
+        column: 0,
+      })),
+      edges: [],
+    })
+    const parsed = new DOMParser().parseFromString(compileAiDrawioCode(plan, ''), 'application/xml')
+    const lane = parsed.querySelector('mxCell[id^="lane-lane"] mxGeometry')!
+    const laneHeight = Number(lane.getAttribute('height'))
+    const nodes = [...parsed.querySelectorAll('mxCell[id^="node-"]')].map((cell) => cell.querySelector('mxGeometry')!)
+    const bottom = Math.max(...nodes.map((geometry) => Number(geometry.getAttribute('y')) + Number(geometry.getAttribute('height'))))
+    expect(laneHeight).toBeGreaterThan(176)
+    expect(bottom).toBeLessThan(laneHeight)
+    expect(Number(nodes[0].getAttribute('height'))).toBeGreaterThan(68)
+  })
 })

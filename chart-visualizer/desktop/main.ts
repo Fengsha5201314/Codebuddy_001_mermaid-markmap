@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -356,15 +357,39 @@ async function writeCliArtifact(envelope: CliWorkerEnvelope, response: Extract<C
   const outputPath = path.resolve(envelope.outputPath)
   await mkdir(path.dirname(outputPath), { recursive: true })
   const temporary = `${outputPath}.${process.pid}.${Date.now()}.tmp`
+  const backup = `${outputPath}.${process.pid}.${Date.now()}.bak`
   const payload = response.artifact.encoding === 'base64'
     ? Buffer.from(response.artifact.content, 'base64')
     : response.artifact.content
   await writeFile(temporary, payload)
+  const temporaryHash = createHash('sha256').update(await readFile(temporary)).digest('hex').toUpperCase()
+  if (response.receipt?.outputSha256 && temporaryHash !== response.receipt.outputSha256) {
+    await rm(temporary, { force: true })
+    throw new Error('临时文件哈希与质量回执不一致，已停止覆盖。')
+  }
+  let backedUp = false
   try {
-    if (envelope.overwrite) await rm(outputPath, { force: true })
+    const outputExists = await stat(outputPath).then(() => true).catch(() => false)
+    if (outputExists && !envelope.overwrite) throw new Error(`输出文件已存在：${outputPath}`)
+    if (outputExists) {
+      await rename(outputPath, backup)
+      backedUp = true
+    }
     await rename(temporary, outputPath)
+    if (backedUp) await rm(backup, { force: true })
   } catch (error) {
     await rm(temporary, { force: true })
+    if (backedUp) {
+      try {
+        await rm(outputPath, { force: true })
+        await rename(backup, outputPath)
+      } catch (restoreError) {
+        throw new Error(
+          `CLI 写入失败，且旧文件恢复失败。备份仍保留在：${backup}`,
+          { cause: restoreError instanceof Error ? restoreError : error },
+        )
+      }
+    }
     throw error
   }
   return outputPath
@@ -374,7 +399,7 @@ async function runCliWorker(requestPath: string, resultPath: string) {
   let workerWindow: BrowserWindow | null = null
   try {
     const envelope = JSON.parse(await readFile(requestPath, 'utf8')) as CliWorkerEnvelope
-    if (!envelope?.request || envelope.request.protocolVersion !== 1) throw new Error('CLI 请求格式不正确。')
+    if (!envelope?.request || (envelope.request.protocolVersion !== 1 && envelope.request.protocolVersion !== 2)) throw new Error('CLI 请求格式不正确。')
     const rendererOrigin = await startLocalServer(0)
     workerWindow = new BrowserWindow({
       show: false,
@@ -420,14 +445,17 @@ async function runCliWorker(requestPath: string, resultPath: string) {
     })
     let result: CliWorkerResult
     if (!response.ok) {
+      if (envelope.receiptPath && response.receipt) await writeJsonAtomically(envelope.receiptPath, response.receipt)
       result = {
         ok: false,
         category: response.category,
         message: response.line ? `${response.message}（第 ${response.line} 行）` : response.message,
+        receipt: response.receipt,
       }
     } else {
       const outputPath = await writeCliArtifact(envelope, response)
-      result = { ok: true, outputPath, metadata: response.metadata }
+      if (envelope.receiptPath && response.receipt) await writeJsonAtomically(envelope.receiptPath, response.receipt)
+      result = { ok: true, outputPath, metadata: response.metadata, receipt: response.receipt }
     }
     await writeJsonAtomically(resultPath, result)
   } catch (error) {

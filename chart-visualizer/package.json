@@ -1,7 +1,7 @@
 {
   "name": "fengsha-diagram-workbench",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.9.0",
   "description": "风沙的本地优先智能流程图与可视化画布工作台",
   "author": "风沙",
   "main": "dist-electron/main.cjs",
@@ -25,7 +25,10 @@
     "test:watch": "vitest",
     "test:e2e:user-data": "pnpm build && pnpm desktop:compile && node e2e/desktop-user-data.e2e.mjs",
     "test:e2e:cli": "pnpm build && pnpm desktop:compile && node e2e/cli.e2e.mjs",
-    "test:e2e:visual": "pnpm build && pnpm desktop:compile && node e2e/visual-canvas.e2e.mjs"
+    "test:e2e:visual": "pnpm build && pnpm desktop:compile && node e2e/visual-canvas.e2e.mjs",
+    "test:e2e:quality": "pnpm build && pnpm desktop:compile && node e2e/label-visibility.e2e.mjs",
+    "test:e2e:streaming": "pnpm build && pnpm desktop:compile && node e2e/visual-ai-streaming.e2e.mjs",
+    "test:release": "pnpm test && pnpm build && pnpm desktop:compile && node e2e/cli.e2e.mjs && node e2e/label-visibility.e2e.mjs && node e2e/visual-canvas.e2e.mjs && node e2e/visual-ai-streaming.e2e.mjs && node e2e/desktop-user-data.e2e.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -73,6 +76,10 @@
       {
         "from": "build/fengsha-diagram.cmd",
         "to": "fengsha-diagram.cmd"
+      },
+      {
+        "from": "agent-skills",
+        "to": "agent-skills"
       }
     ],
     "extraResources": [

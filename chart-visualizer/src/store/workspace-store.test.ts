@@ -154,4 +154,34 @@ describe('workspace store visual documents', () => {
     const id = useWorkspaceStore.getState().createVisualDocument('空画布', '   ')
     expect(useWorkspaceStore.getState().documents.find((item) => item.id === id)!.drawioXml).toBe(EMPTY_DRAWIO_XML)
   })
+
+  it('切换文档后仍把迟到的自动保存写回原文档', () => {
+    const firstId = useWorkspaceStore.getState().createVisualDocument('第一张')
+    const secondId = useWorkspaceStore.getState().createVisualDocument('第二张')
+    const lateXml = '<mxfile><diagram>late-save</diagram></mxfile>'
+    expect(useWorkspaceStore.getState().activeDocumentId).toBe(secondId)
+    useWorkspaceStore.getState().updateVisualDocument(firstId, lateXml)
+    expect(useWorkspaceStore.getState().documents.find((item) => item.id === firstId)?.drawioXml).toBe(lateXml)
+    expect(useWorkspaceStore.getState().documents.find((item) => item.id === secondId)?.drawioXml).toBe(EMPTY_DRAWIO_XML)
+  })
+
+  it('在一次状态提交中创建回滚版本并记录最后有效图', () => {
+    const documentId = useWorkspaceStore.getState().activeDocumentId
+    const before = useWorkspaceStore.getState().documents.find((item) => item.id === documentId)!
+    const source = 'flowchart LR\nA[已验证] --> B[完成]'
+    const committed = useWorkspaceStore.getState().commitValidatedCandidate(documentId, source, {
+      engine: 'mermaid',
+      source,
+      sourceSha256: 'A'.repeat(64),
+      quality: 'professional',
+      verifiedAt: '2026-08-29T00:00:00.000Z',
+      checksPassed: 6,
+      checksTotal: 6,
+    })
+    const after = useWorkspaceStore.getState().documents.find((item) => item.id === documentId)!
+    expect(committed).toBe(true)
+    expect(after.code).toBe(source)
+    expect(after.versions[0].code).toBe(before.code)
+    expect(after.lastGood).toMatchObject({ sourceSha256: 'A'.repeat(64), checksPassed: 6 })
+  })
 })
