@@ -45,6 +45,10 @@ describe('CLI argument parser', () => {
   it('rejects destructive or misleading path combinations', () => {
     expect(() => parseCliArguments(['render', 'same.svg', '-o', 'same.svg'], cwd)).toThrow(/不能是同一路径/)
     expect(() => parseCliArguments(['render', 'source.mmd', '-o', 'wrong.png', '--format', 'svg'], cwd)).toThrow(/扩展名.*不一致/)
+    expect(() => parseCliArguments(['deliver', 'source.mmd', '-o', 'result.png', '--receipt', 'result.png'], cwd)).toThrow(/输出文件与质量回执不能是同一路径/)
+    expect(() => parseCliArguments(['visual-check', 'source.drawio', '--receipt', 'source.drawio'], cwd)).toThrow(/输入文件与质量回执不能是同一路径/)
+    expect(() => parseCliArguments(['compile', 'plan.json', '--target', 'drawio', '-o', 'wrong.mmd'], cwd)).toThrow(/--target drawio.*\.drawio/)
+    expect(() => parseCliArguments(['compile', 'plan.json', '--target', 'mermaid', '-o', 'wrong.drawio'], cwd)).toThrow(/--target mermaid.*\.mmd/)
   })
 
   it('rejects ambiguous stdin output and unsupported options', () => {

@@ -396,21 +396,17 @@ function App() {
                 ) : (
                   <VisualInspector
                     document={active}
-                    onApplyXml={(xml) => {
-                      try {
-                        visualCanvasRef.current?.loadXml(xml)
-                        showNotice('AI 修改正在应用到可视化画布')
-                      } catch (error) {
-                        showNotice(error instanceof Error ? error.message : '画布暂时无法接收 AI 修改')
-                      }
+                    onApplyXml={async (xml) => {
+                      const canvas = visualCanvasRef.current
+                      if (!canvas) throw new Error('画布尚未准备完成。')
+                      showNotice('AI 修改正在应用到可视化画布')
+                      await canvas.loadXml(xml)
                     }}
-                    onApplyMermaid={(mermaid) => {
-                      try {
-                        visualCanvasRef.current?.loadMermaid(mermaid)
-                        showNotice('AI 结构正在转换为可视化画布')
-                      } catch (error) {
-                        showNotice(error instanceof Error ? error.message : '画布暂时无法接收 AI 结构')
-                      }
+                    onApplyMermaid={async (mermaid) => {
+                      const canvas = visualCanvasRef.current
+                      if (!canvas) throw new Error('画布尚未准备完成。')
+                      showNotice('AI 结构正在转换为可视化画布')
+                      await canvas.loadMermaid(mermaid)
                     }}
                     onClose={() => updatePreferences({ inspectorOpen: false })}
                     onOpenSettings={() => setSettingsOpen(true)}
@@ -461,10 +457,10 @@ function App() {
           onSuccess={(fileName) => showNotice(`已生成并开始下载：${fileName}`)}
           title={active.title}
           fallbackXml={active.drawioXml ?? ''}
-          onExport={(format) => {
+          onExport={(format, options) => {
             const canvas = visualCanvasRef.current
             if (!canvas) return Promise.reject(new Error('画布尚未准备完成。'))
-            return canvas.exportDiagram(format, { border: 16 })
+            return canvas.exportDiagram(format, { border: 16, ...options })
           }}
         />
       )}

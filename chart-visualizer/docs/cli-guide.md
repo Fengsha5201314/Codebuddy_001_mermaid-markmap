@@ -22,6 +22,20 @@ fengsha-diagram version
 
 > 如果当前终端是在安装前打开的，请关闭并重新打开终端。仍提示找不到命令时，可直接运行安装目录中的 `fengsha-diagram.cmd`。
 
+### 把随软件提供的 Agent Skill 安装给 Codex / Claude Code
+
+安装目录内同时提供 `agent-skills\fengsha-diagram`。复制整个文件夹到对应位置即可：
+
+```powershell
+# Codex（当前 Windows 用户）
+Copy-Item -Recurse "C:\Users\<用户名>\AppData\Local\Programs\fengsha-diagram-workbench\agent-skills\fengsha-diagram" "C:\Users\<用户名>\.codex\skills\fengsha-diagram"
+
+# Claude Code（当前 Windows 用户）
+Copy-Item -Recurse "C:\Users\<用户名>\AppData\Local\Programs\fengsha-diagram-workbench\agent-skills\fengsha-diagram" "C:\Users\<用户名>\.claude\skills\fengsha-diagram"
+```
+
+如果目标目录已存在，请先核对其中是否有自己修改过的内容；不要直接覆盖。重启对应 Agent 工具后，在任务中明确说“使用 fengsha-diagram Skill 生成流程图”即可。
+
 ## 2. 最常用的三个命令
 
 ### 只检查，不生成文件
@@ -43,6 +57,14 @@ PNG 默认使用智能高清模式，完整画布长边目标约 4800px，并受
 ```powershell
 fengsha-diagram deliver process.mmd -o process.png --scale 3 --padding 32 --force --json
 ```
+
+Mermaid、`fengsha.plan/v1` 和单页 draw.io XML 都可直接交付。标准 diagrams.net 压缩 XML（包括 `<?xml ...?>` 声明）会先在本地有界解压、完成逐页结构检查，再由内置 draw.io 引擎按同一 XML 快照生成图片：
+
+```powershell
+fengsha-diagram deliver process.drawio -o process.png --quality professional --receipt process.receipt.json --json
+```
+
+多页 draw.io 可以执行 `validate` 和 `visual-check`；为避免静默漏页，图片交付会要求先拆成单页。
 
 ### 生成可编辑 draw.io
 
@@ -119,6 +141,8 @@ fengsha-diagram compile <计划.json|-> [--target drawio|mermaid] [-o 输出]
 fengsha-diagram --help
 ```
 
+成品与质量回执采用同一提交事务。输入、成品、回执三者不能指向同一路径；同一目标被两个 Agent 并发写入时只允许一个成功，其余调用会安全退出，不会留下半个文件或覆盖上一份正常成品。
+
 ## 5. 给其他 AI 工具的推荐调用规范
 
 让 AI 始终遵循下面的顺序，可以显著减少失败结果进入文档：
@@ -189,7 +213,7 @@ child.on('exit', (code) => {
 | `4` | 渲染或导出失败 | 降低清晰度、检查颜色参数或图形规模 |
 | `5` | 文件读写失败 | 检查路径、权限和磁盘空间 |
 | `6` | 专业质量检查拒绝 | 按诊断对象局部修复，最多重试两轮 |
-| `7` | 流程要求人工视觉审查 | 请人或具备视觉能力的 Agent 查看成品 |
+| `7` | 预留：强制人工视觉门 | 当前版本以回执中的 `visualReview=pending` 表达，不会自动返回此码 |
 | `8` | 超时 | 缩小或拆分图表；确认进程已经结束后重试 |
 | `10` | CLI 内部错误 | 保留版本、命令和错误信息并提交问题 |
 

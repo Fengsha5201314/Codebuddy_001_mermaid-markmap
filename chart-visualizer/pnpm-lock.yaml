@@ -29,6 +29,9 @@ importers:
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
+      pako:
+        specifier: ^3.0.1
+        version: 3.0.1
       react:
         specifier: ^19.2.5
         version: 19.2.8
@@ -1778,6 +1781,9 @@ packages:
 
   pako@2.2.0:
     resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
+
+  pako@3.0.1:
+    resolution: {integrity: sha512-GupotUUI0mlhugKjUs4bjOwLt3nrehy9Ys2dxC0GtgVef5cnKggkDMmf2bq2poCCuVXopWPmqsc9VDT2iJUy+w==}
 
   parse5@8.0.1:
     resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
@@ -4175,6 +4181,8 @@ snapshots:
   package-manager-detector@1.8.0: {}
 
   pako@2.2.0: {}
+
+  pako@3.0.1: {}
 
   parse5@8.0.1:
     dependencies:

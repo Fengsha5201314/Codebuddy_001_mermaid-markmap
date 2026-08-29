@@ -76,7 +76,7 @@ describe('Visual AI composer', () => {
     })
 
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
     const textarea = host.querySelector<HTMLTextAreaElement>('#visual-ai-prompt')!
@@ -89,6 +89,7 @@ describe('Visual AI composer', () => {
     })
 
     expect(requestSignal).toBeDefined()
+    expect(host.querySelector<HTMLButtonElement>('.ai-delete-chat')?.disabled).toBe(true)
     await act(async () => root.unmount())
     root = createRoot(host)
 
@@ -111,7 +112,7 @@ describe('Visual AI composer', () => {
     expect(completedThread?.messages.some((message) => message.content === '后台任务已完成，切回后可以继续查看。')).toBe(true)
 
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
     expect(host.textContent).toContain('后台任务已完成，切回后可以继续查看。')
@@ -122,7 +123,7 @@ describe('Visual AI composer', () => {
     const state = useWorkspaceStore.getState()
     const document = state.documents.find((item) => item.id === state.activeDocumentId) as DiagramDocument
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
 
@@ -153,7 +154,7 @@ describe('Visual AI composer', () => {
     })
 
     await act(async () => {
-      root.render(<VisualAiAssistant document={firstDocument} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={firstDocument} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
     const textarea = host.querySelector<HTMLTextAreaElement>('#visual-ai-prompt')!
@@ -168,7 +169,7 @@ describe('Visual AI composer', () => {
     const secondId = useWorkspaceStore.getState().createVisualDocument('第二个图')
     const secondDocument = useWorkspaceStore.getState().documents.find((item) => item.id === secondId) as DiagramDocument
     await act(async () => {
-      root.render(<VisualAiAssistant document={secondDocument} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={secondDocument} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
 
@@ -191,7 +192,7 @@ describe('Visual AI composer', () => {
     })
 
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
     const textarea = host.querySelector<HTMLTextAreaElement>('#visual-ai-prompt')!
@@ -215,7 +216,12 @@ describe('Visual AI composer', () => {
   it('compiles a structured AI plan locally before allowing it onto the canvas', async () => {
     const state = useWorkspaceStore.getState()
     const document = state.documents.find((item) => item.id === state.activeDocumentId) as DiagramDocument
-    const onApplyXml = vi.fn()
+    let resolveApply: (() => void) | undefined
+    let rejectApply: ((error: Error) => void) | undefined
+    const onApplyXml = vi.fn<(xml: string) => Promise<void>>(() => new Promise<void>((resolve, reject) => {
+      resolveApply = resolve
+      rejectApply = reject
+    }))
     aiMocks.requestStream
       .mockResolvedValueOnce({
         requestId: 'discuss-1',
@@ -250,7 +256,7 @@ describe('Visual AI composer', () => {
       })
 
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={onApplyXml} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={onApplyXml} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
     const textarea = host.querySelector<HTMLTextAreaElement>('#visual-ai-prompt')!
@@ -269,12 +275,46 @@ describe('Visual AI composer', () => {
     expect(host.textContent).toContain('候选已通过专业检查')
     await act(async () => {
       host.querySelector<HTMLButtonElement>('.ai-action-buttons .primary')!.click()
+      await Promise.resolve()
     })
     expect(onApplyXml).toHaveBeenCalledOnce()
+    expect(host.textContent).toContain('正在将候选应用到画布')
+    expect(host.textContent).not.toContain('候选已应用到可视化画布')
+    const conversationState = useAiConversationStore.getState()
+    const applyingThreadId = conversationState.activeThreadByProject[document.projectId]
+    expect(host.querySelector<HTMLButtonElement>('.ai-delete-chat')?.disabled).toBe(true)
+    const otherThreadId = conversationState.createThread(document.projectId)
+    await act(async () => {
+      useAiConversationStore.getState().setActiveThread(document.projectId, otherThreadId)
+      await Promise.resolve()
+    })
+    await act(async () => {
+      useAiConversationStore.getState().setActiveThread(document.projectId, applyingThreadId)
+      await Promise.resolve()
+    })
+    expect(host.querySelector<HTMLButtonElement>('.ai-delete-chat')?.disabled).toBe(true)
     const xml = onApplyXml.mock.calls[0][0] as string
     expect(xml).toContain('<mxfile')
     expect(xml).toContain('value="审批通过？"')
     expect(xml).not.toContain('"mode":"replace"')
+    await act(async () => {
+      rejectApply?.(new Error('draw.io 导出超时'))
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('候选应用失败，原画布已保留：draw.io 导出超时')
+    expect(host.textContent).toContain('已生成采购审批流程')
+    expect(host.textContent).not.toContain('候选已应用到可视化画布')
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('.ai-action-buttons .primary')!.click()
+      await Promise.resolve()
+    })
+    expect(onApplyXml).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('正在将候选应用到画布')
+    await act(async () => {
+      resolveApply?.()
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('候选已应用到可视化画布')
   })
 
   it('adds a clipboard screenshot as an image attachment when pasted into the prompt', async () => {
@@ -285,7 +325,7 @@ describe('Visual AI composer', () => {
     })
     const document = state.documents.find((item) => item.id === state.activeDocumentId) as DiagramDocument
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
 
@@ -338,7 +378,7 @@ describe('Visual AI composer', () => {
     })
     const document = state.documents.find((item) => item.id === state.activeDocumentId) as DiagramDocument
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
 
@@ -381,7 +421,7 @@ describe('Visual AI composer', () => {
     const state = useWorkspaceStore.getState()
     const document = state.documents.find((item) => item.id === state.activeDocumentId) as DiagramDocument
     await act(async () => {
-      root.render(<VisualAiAssistant document={document} onApplyXml={() => undefined} onApplyMermaid={() => undefined} onOpenSettings={() => undefined} />)
+      root.render(<VisualAiAssistant document={document} onApplyXml={async () => undefined} onApplyMermaid={async () => undefined} onOpenSettings={() => undefined} />)
       await Promise.resolve()
     })
     const paste = new Event('paste', { bubbles: true, cancelable: true })

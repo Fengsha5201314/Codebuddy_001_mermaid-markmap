@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, Download, FileImage, FileType2, LoaderCircle, Network } from 'lucide-react'
-import type { DrawioExportFormat, DrawioExportResult } from '@/lib/drawio-bridge'
+import type { DrawioExportFormat, DrawioExportOptions, DrawioExportResult } from '@/lib/drawio-bridge'
 import { makePortableDrawioSvg } from '@/lib/portable-drawio-svg'
 import { rasterizeSvgMarkup } from '@/lib/export'
 import { assessDrawioDiagram, qualityFailureMessage, type DiagramQualityProfile, type DiagramQualityReceipt } from '@/lib/reliable-diagram-delivery'
@@ -15,7 +15,7 @@ interface VisualExportDialogProps {
   onSuccess: (fileName: string) => void
   title: string
   fallbackXml: string
-  onExport: (format: DrawioExportFormat) => Promise<DrawioExportResult>
+  onExport: (format: DrawioExportFormat, options?: DrawioExportOptions) => Promise<DrawioExportResult>
 }
 
 const formats: Array<{
@@ -123,7 +123,9 @@ export function VisualExportDialog({ open, onClose, onSuccess, title, fallbackXm
       const xmlResult = await onExport('xml')
       const latestXml = xmlResult.xml || (typeof xmlResult.data === 'string' ? xmlResult.data : '') || fallbackXml
       const requestFormat: DrawioExportFormat = format === 'xml' ? 'xml' : 'svg'
-      const result = format === 'xml' ? xmlResult : await onExport(requestFormat)
+      // Export the delivery SVG from the exact XML snapshot that is assessed.
+      // This prevents an autosave/user edit race from pairing XML A with SVG B.
+      const result = format === 'xml' ? xmlResult : await onExport(requestFormat, { xml: latestXml })
       const extensions: Record<VisualDeliveryFormat, string> = { xml: 'drawio', svg: 'svg', png: 'png', pdf: 'pdf' }
       const mimes: Record<VisualDeliveryFormat, string> = {
         xml: 'application/vnd.jgraph.mxfile',

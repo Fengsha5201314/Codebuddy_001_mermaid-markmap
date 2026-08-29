@@ -57,8 +57,8 @@ import {
 
 interface VisualAiAssistantProps {
   document: DiagramDocument
-  onApplyXml: (xml: string) => void
-  onApplyMermaid: (mermaid: string) => void
+  onApplyXml: (xml: string) => Promise<void>
+  onApplyMermaid: (mermaid: string) => Promise<void>
   onOpenSettings: () => void
 }
 
@@ -112,12 +112,14 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const taskKey = aiTaskKey('drawio', document.id, activeThreadId ?? 'default')
   const task = useAiTaskStore((state) => state.tasks[taskKey])
   const running = task?.running ?? false
+  const applying = task?.applying ?? false
   const streamText = task?.streamText ?? ''
   const workflowStage = task?.workflowStage ?? null
   const candidate = (task?.candidate as VisualCandidate | null | undefined) ?? null
   const candidateStale = task?.candidateStale ?? false
   const requestError = task?.requestError ?? null
   const applied = task?.applied ?? false
+  const busy = running || applying
   const projectThreads = threads.filter((thread) => thread.projectId === document.projectId)
   const activeThread = projectThreads.find((thread) => thread.id === activeThreadId)
 
@@ -168,7 +170,7 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
   const canSubmit = Boolean(
     selectedModel
     && selectedProvider?.configured
-    && !running
+    && !busy
     && Boolean(prompt.trim())
     && !hasUnsupportedImage,
   )
@@ -279,11 +281,12 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
     && !candidateConflict
     && candidate.documentId === document.id
     && !applied
+    && !applying
   const hasAssistantReply = Boolean(activeThread?.messages.some((message) => message.role === 'assistant'))
   const canGenerateFromConversation = Boolean(
     selectedModel
     && selectedProvider?.configured
-    && !running
+    && !busy
     && hasAssistantReply
     && !prompt.trim()
     && !attachments.length,
@@ -299,6 +302,24 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
       : streamText
         ? '正在流式生成'
         : '正在读取画布结构'
+
+  const applyCandidate = async () => {
+    if (!candidate || !canApply) return
+    const applyingTaskKey = taskKey
+    patchAiTask(applyingTaskKey, { applying: true, applied: false, requestError: null })
+    try {
+      if (candidate.mode === 'mermaid') await onApplyMermaid(candidate.response.code)
+      else await onApplyXml(candidate.response.code)
+      patchAiTask(applyingTaskKey, { applied: true, requestError: null })
+    } catch (error) {
+      patchAiTask(applyingTaskKey, {
+        applied: false,
+        requestError: `候选应用失败，原画布已保留：${readableError(error)}`,
+      })
+    } finally {
+      patchAiTask(applyingTaskKey, { applying: false })
+    }
+  }
 
   return (
     <div className="ai-assistant visual-ai-assistant">
@@ -316,8 +337,8 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
         subtitle="与 Mermaid 原图共享"
         emptyMessage="说明目标，AI 会先讨论画布结构和修改边界；确认方向后再生成候选。"
         templates={promptTemplates}
-        running={running}
-        activityKey={`${activeThread?.messages.length ?? 0}:${running}:${streamText.length}:${candidate?.response.code.length ?? 0}:${requestError ?? ''}`}
+        running={busy}
+        activityKey={`${activeThread?.messages.length ?? 0}:${busy}:${streamText.length}:${candidate?.response.code.length ?? 0}:${requestError ?? ''}`}
         iconForTemplate={templateIcon}
         onSelectThread={(threadId) => setActiveThread(document.projectId, threadId)}
         onCreateThread={() => createThread(document.projectId)}
@@ -331,10 +352,10 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
       </AiConversationPanel>
 
       {!running && (candidate || hasAssistantReply) && (
-        <section className={`ai-action-dock ${candidate && !candidate.validationError && !candidateStale && !candidateConflict ? 'ready' : ''}`} aria-label="AI 下一步操作">
-          <div>{applied ? <CheckCircle2 size={17} /> : candidateStale || candidateConflict || candidate?.validationError ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}<span><strong>{applied ? '候选已应用到可视化画布' : candidateStale ? '先按新意见更新候选' : candidateConflict ? '画布已在候选生成后发生变化' : candidate?.validationError ? '候选仍需修复' : candidate ? '候选已校验，可以安全应用' : '已有对话共识，可以生成候选'}</strong><small>{applied ? '应用前版本已自动保存，可从版本页回退。' : candidate ? '当前画布不会被直接覆盖。' : prompt.trim() ? '先发送输入框里的补充内容。' : '也可以继续输入，进一步补充细节。'}</small></span></div>
+        <section className={`ai-action-dock ${candidate && !applying && !candidate.validationError && !candidateStale && !candidateConflict ? 'ready' : ''}`} aria-label="AI 下一步操作">
+          <div>{applied ? <CheckCircle2 size={17} /> : applying ? <LoaderCircle size={17} className="spin" /> : candidateStale || candidateConflict || candidate?.validationError ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}<span><strong>{applied ? '候选已应用到可视化画布' : applying ? '正在将候选应用到画布' : candidateStale ? '先按新意见更新候选' : candidateConflict ? '画布已在候选生成后发生变化' : candidate?.validationError ? '候选仍需修复' : candidate ? '候选已校验，可以安全应用' : '已有对话共识，可以生成候选'}</strong><small>{applied ? '应用前版本已自动保存，可从版本页回退。' : applying ? '正在等待画布载入、同快照导出和专业检查回执。' : candidate ? '当前画布不会被直接覆盖。' : prompt.trim() ? '先发送输入框里的补充内容。' : '也可以继续输入，进一步补充细节。'}</small></span></div>
           <span className="ai-action-buttons">
-            {!applied && candidate ? <><button type="button" onClick={() => patchAiTask(taskKey, { candidate: null, candidateStale: false })}>放弃候选</button>{candidate.validationError ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '修复当前候选中的结构错误，保持已经确认的业务流程不变。', appendUser: false, action: 'fix', requestCode: candidate.response.code, compileBaseXml: candidate.baseXml })}><RefreshCw size={14} />修复候选</button> : candidateStale || candidateConflict ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求更新可视化画布候选。', appendUser: false })}><RefreshCw size={14} />更新候选</button> : candidate.response.action !== 'explain' && <button type="button" className="primary" disabled={!canApply} onClick={() => { if (candidate.mode === 'mermaid') onApplyMermaid(candidate.response.code); else onApplyXml(candidate.response.code); patchAiTask(taskKey, { applied: true }) }}><Check size={14} />应用到画布</button>}</> : !candidate && <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成可视化画布候选。', appendUser: false })}><Send size={14} />生成候选</button>}
+            {!applied && candidate ? <><button type="button" disabled={applying} onClick={() => patchAiTask(taskKey, { candidate: null, candidateStale: false })}>放弃候选</button>{candidate.validationError ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '修复当前候选中的结构错误，保持已经确认的业务流程不变。', appendUser: false, action: 'fix', requestCode: candidate.response.code, compileBaseXml: candidate.baseXml })}><RefreshCw size={14} />修复候选</button> : candidateStale || candidateConflict ? <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求更新可视化画布候选。', appendUser: false })}><RefreshCw size={14} />更新候选</button> : candidate.response.action !== 'explain' && <button type="button" className="primary" disabled={!canApply} onClick={() => void applyCandidate()}>{applying ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />}{applying ? '正在应用…' : '应用到画布'}</button>}</> : !candidate && <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成可视化画布候选。', appendUser: false })}><Send size={14} />生成候选</button>}
           </span>
         </section>
       )}
@@ -342,10 +363,10 @@ export function VisualAiAssistant({ document, onApplyXml, onApplyMermaid, onOpen
       <section className="ai-prompt-card">
         <div className={`ai-context-strip ${hasCurrentDiagram ? 'ready' : 'empty'}`} title={hasCurrentDiagram ? 'AI 会携带当前可视化画布和本项目对话上下文' : undefined}><ShieldCheck size={13} /><span>{contextDescription}</span></div>
         <label className="sr-only" htmlFor="visual-ai-prompt">描述要完成的工作</label>
-        <textarea ref={promptRef} id="visual-ai-prompt" rows={3} maxLength={4000} value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={(event) => { const files = imageFilesFromClipboard(event.clipboardData); if (!files.length) return; event.preventDefault(); void appendAiAttachmentFiles(attachments, files).then((merged) => { setAttachments(merged); patchAiTask(taskKey, { requestError: null }) }).catch((error) => patchAiTask(taskKey, { requestError: readableError(error) })) }} placeholder="继续描述需求、回答 AI 问题，或直接粘贴截图…" disabled={running || !selectedModel} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void run('discuss') } }} />
-        <AiAttachmentPicker attachments={attachments} supportsVision={supportsVision} disabled={running || !selectedModel} onChange={setAttachments} onError={(error) => patchAiTask(taskKey, { requestError: error })} />
+        <textarea ref={promptRef} id="visual-ai-prompt" rows={3} maxLength={4000} value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={(event) => { const files = imageFilesFromClipboard(event.clipboardData); if (!files.length) return; event.preventDefault(); void appendAiAttachmentFiles(attachments, files).then((merged) => { setAttachments(merged); patchAiTask(taskKey, { requestError: null }) }).catch((error) => patchAiTask(taskKey, { requestError: readableError(error) })) }} placeholder="继续描述需求、回答 AI 问题，或直接粘贴截图…" disabled={busy || !selectedModel} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void run('discuss') } }} />
+        <AiAttachmentPicker attachments={attachments} supportsVision={supportsVision} disabled={busy || !selectedModel} onChange={setAttachments} onError={(error) => patchAiTask(taskKey, { requestError: error })} />
         <footer className="ai-composer-footer">
-          <span className="ai-composer-tools"><AiTemplateMenu templates={promptTemplates} disabled={running} iconForTemplate={templateIcon} onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); patchAiTask(taskKey, { requestError: null }); window.requestAnimationFrame(() => promptRef.current?.focus()) }} /><span className="ai-model-select"><select value={preferences.aiSelectedModel} onChange={(event) => updatePreferences({ aiSelectedModel: event.target.value })} disabled={!preferences.aiEnabledModels.length || running} aria-label="画布 AI 模型"><option value="" disabled>请选择模型</option>{preferences.aiEnabledModels.map((item) => <option value={aiModelKey(item)} key={aiModelKey(item)}>{status?.providers.find((provider) => provider.id === item.provider)?.label || providerLabels[item.provider]} · {item.model}</option>)}</select></span></span>
+          <span className="ai-composer-tools"><AiTemplateMenu templates={promptTemplates} disabled={busy} iconForTemplate={templateIcon} onSelectTemplate={(item) => { setPrompt((current) => appendAiPrompt(current, item.prompt)); patchAiTask(taskKey, { requestError: null }); window.requestAnimationFrame(() => promptRef.current?.focus()) }} /><span className="ai-model-select"><select value={preferences.aiSelectedModel} onChange={(event) => updatePreferences({ aiSelectedModel: event.target.value })} disabled={!preferences.aiEnabledModels.length || busy} aria-label="画布 AI 模型"><option value="" disabled>请选择模型</option>{preferences.aiEnabledModels.map((item) => <option value={aiModelKey(item)} key={aiModelKey(item)}>{status?.providers.find((provider) => provider.id === item.provider)?.label || providerLabels[item.provider]} · {item.model}</option>)}</select></span></span>
           <span className="ai-composer-submit"><small>{prompt.length}/4000 · Ctrl+Enter</small>{running ? <button type="button" className="ai-stop-button" onClick={() => stopAiTask(taskKey)}><X size={14} />停止</button> : <button type="button" className="ai-send-button" onClick={() => void run('discuss')} disabled={!canSubmit}><Send size={15} /><span>发送</span></button>}</span>
         </footer>
       </section>

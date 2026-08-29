@@ -1,6 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
@@ -18,6 +17,7 @@ import {
   type CliWorkerEnvelope,
   type CliWorkerResult,
 } from '../src/cli-contracts.ts'
+import { commitCliDeliveryTransaction } from '../cli/file-integrity.ts'
 
 const APP_NAME = '风沙图表工作台'
 const APP_ID = 'online.fengsha.diagram'
@@ -208,7 +208,12 @@ function registerIpc() {
     if (!isTrustedSender(event) || !closeRequestPending || !mainWindow || mainWindow.isDestroyed()) return
     allowWindowClose = true
     closeRequestPending = false
-    mainWindow.close()
+    // The embedded draw.io frame installs its own beforeunload handler. At this
+    // point the host renderer has already captured the latest XML and completed
+    // our save/discard confirmation, so bypass the child frame's second prompt.
+    // Otherwise BrowserWindow.close() can be cancelled silently and leave the
+    // desktop task running after the user explicitly confirmed shutdown.
+    mainWindow.destroy()
   })
 }
 
@@ -351,47 +356,33 @@ async function writeJsonAtomically(filePath: string, value: unknown) {
   await rename(temporary, filePath)
 }
 
-async function writeCliArtifact(envelope: CliWorkerEnvelope, response: Extract<CliRendererResponse, { ok: true }>) {
-  if (!response.artifact) return undefined
-  if (!envelope.outputPath) throw new Error('CLI 结果包含文件内容，但没有指定输出路径。')
-  const outputPath = path.resolve(envelope.outputPath)
-  await mkdir(path.dirname(outputPath), { recursive: true })
-  const temporary = `${outputPath}.${process.pid}.${Date.now()}.tmp`
-  const backup = `${outputPath}.${process.pid}.${Date.now()}.bak`
-  const payload = response.artifact.encoding === 'base64'
-    ? Buffer.from(response.artifact.content, 'base64')
-    : response.artifact.content
-  await writeFile(temporary, payload)
-  const temporaryHash = createHash('sha256').update(await readFile(temporary)).digest('hex').toUpperCase()
-  if (response.receipt?.outputSha256 && temporaryHash !== response.receipt.outputSha256) {
-    await rm(temporary, { force: true })
-    throw new Error('临时文件哈希与质量回执不一致，已停止覆盖。')
-  }
-  let backedUp = false
-  try {
-    const outputExists = await stat(outputPath).then(() => true).catch(() => false)
-    if (outputExists && !envelope.overwrite) throw new Error(`输出文件已存在：${outputPath}`)
-    if (outputExists) {
-      await rename(outputPath, backup)
-      backedUp = true
-    }
-    await rename(temporary, outputPath)
-    if (backedUp) await rm(backup, { force: true })
-  } catch (error) {
-    await rm(temporary, { force: true })
-    if (backedUp) {
-      try {
-        await rm(outputPath, { force: true })
-        await rename(backup, outputPath)
-      } catch (restoreError) {
-        throw new Error(
-          `CLI 写入失败，且旧文件恢复失败。备份仍保留在：${backup}`,
-          { cause: restoreError instanceof Error ? restoreError : error },
-        )
-      }
-    }
-    throw error
-  }
+async function commitCliResponse(envelope: CliWorkerEnvelope, response: Extract<CliRendererResponse, { ok: true }>) {
+  if (response.artifact && !envelope.outputPath) throw new Error('CLI 结果包含文件内容，但没有指定输出路径。')
+  if (envelope.receiptPath && !response.receipt) throw new Error('CLI 请求了质量回执，但渲染进程没有返回回执。')
+  const outputPath = response.artifact && envelope.outputPath ? path.resolve(envelope.outputPath) : undefined
+  const receiptPath = response.receipt && envelope.receiptPath ? path.resolve(envelope.receiptPath) : undefined
+  await commitCliDeliveryTransaction({
+    overwrite: Boolean(envelope.overwrite),
+    output: response.artifact && outputPath
+      ? {
+          path: outputPath,
+          label: '输出文件',
+          payload: response.artifact.encoding === 'base64'
+            ? Buffer.from(response.artifact.content, 'base64')
+            : response.artifact.content,
+          expected: envelope.outputSnapshot,
+          expectedSha256: response.receipt?.outputSha256,
+        }
+      : undefined,
+    receipt: response.receipt && receiptPath
+      ? {
+          path: receiptPath,
+          label: '质量回执',
+          payload: `${JSON.stringify(response.receipt)}\n`,
+          expected: envelope.receiptSnapshot,
+        }
+      : undefined,
+  })
   return outputPath
 }
 
@@ -445,7 +436,6 @@ async function runCliWorker(requestPath: string, resultPath: string) {
     })
     let result: CliWorkerResult
     if (!response.ok) {
-      if (envelope.receiptPath && response.receipt) await writeJsonAtomically(envelope.receiptPath, response.receipt)
       result = {
         ok: false,
         category: response.category,
@@ -453,9 +443,17 @@ async function runCliWorker(requestPath: string, resultPath: string) {
         receipt: response.receipt,
       }
     } else {
-      const outputPath = await writeCliArtifact(envelope, response)
-      if (envelope.receiptPath && response.receipt) await writeJsonAtomically(envelope.receiptPath, response.receipt)
-      result = { ok: true, outputPath, metadata: response.metadata, receipt: response.receipt }
+      try {
+        const outputPath = await commitCliResponse(envelope, response)
+        result = { ok: true, outputPath, metadata: response.metadata, receipt: response.receipt }
+      } catch (error) {
+        result = {
+          ok: false,
+          category: 'io',
+          message: error instanceof Error ? error.message : 'CLI 成品事务提交失败。',
+          receipt: response.receipt,
+        }
+      }
     }
     await writeJsonAtomically(resultPath, result)
   } catch (error) {

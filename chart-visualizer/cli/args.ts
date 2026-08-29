@@ -63,6 +63,11 @@ function inferFormat(output: string | undefined): CliRenderFormat {
   return normalizeFormat(extension)
 }
 
+function normalizedPath(filePath: string): string {
+  const resolved = path.resolve(filePath)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
 export function parseCliArguments(argv: string[], cwd = process.cwd()): CliParsedCommand {
   let commandName = ''
   let input = ''
@@ -172,12 +177,25 @@ export function parseCliArguments(argv: string[], cwd = process.cwd()): CliParse
   }
 
   const resolvedInput = input === '-' ? '-' : path.resolve(cwd, input)
-  if (output && resolvedInput !== '-' && path.resolve(output).toLowerCase() === resolvedInput.toLowerCase()) {
+  if (output && resolvedInput !== '-' && normalizedPath(output) === normalizedPath(resolvedInput)) {
     throw new CliUsageError('输入文件与输出文件不能是同一路径。')
+  }
+  if (receipt && resolvedInput !== '-' && normalizedPath(receipt) === normalizedPath(resolvedInput)) {
+    throw new CliUsageError('输入文件与质量回执不能是同一路径。')
+  }
+  if (receipt && output && normalizedPath(receipt) === normalizedPath(output)) {
+    throw new CliUsageError('输出文件与质量回执不能是同一路径。')
   }
   if (output && formatWasExplicit && (command === 'render' || command === 'deliver')) {
     const extensionFormat = inferFormat(output)
     if (extensionFormat !== format) throw new CliUsageError(`输出扩展名与 --format 不一致：.${path.extname(output).slice(1)} / ${format}。`)
+  }
+  if (command === 'compile' && output) {
+    const expectedExtension = target === 'drawio' ? '.drawio' : '.mmd'
+    const actualExtension = path.extname(output).toLowerCase()
+    if (actualExtension !== expectedExtension) {
+      throw new CliUsageError(`输出扩展名与 --target ${target} 不一致：应使用 ${expectedExtension}。`)
+    }
   }
   const request: CliWorkerRequest = command === 'compile'
     ? { protocolVersion: 2, operation: target === 'drawio' ? 'compile-drawio' : 'compile-mermaid', source: '', quality }

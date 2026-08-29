@@ -10,6 +10,7 @@ const expectedAppVersion = String(packageInfo.version)
 const packagedExecutable = process.env.FENGSHA_E2E_EXECUTABLE?.trim()
 const userDataDirectory = await mkdtemp(path.join(tmpdir(), 'fengsha-visual-e2e-'))
 const failures = []
+const rendererErrors = []
 let application
 let applicationProcess
 let page
@@ -37,6 +38,10 @@ try {
   applicationProcess = application.process()
 
   page = await application.firstWindow()
+  page.on('pageerror', (error) => rendererErrors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') rendererErrors.push(message.text())
+  })
   await page.waitForLoadState('domcontentloaded')
   if (packagedExecutable) {
     const installedVersion = page.getByText(new RegExp(`\\u667a\\u80fd\\u5236\\u56fe\\u5de5\\u4f5c\\u53f0 \\u00b7 v${expectedAppVersion.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}`))
@@ -304,9 +309,29 @@ try {
   check(returnDurationMs < 3_000, `\u8fd4\u56de\u5df2\u6253\u5f00\u7684\u753b\u5e03\u5e94\u5728 3 \u79d2\u5185\u5b8c\u6210\uff0c\u5b9e\u9645 ${returnDurationMs}ms`)
 
   await page.getByRole('button', { name: /\u5207\u6362\u5230\u6e90\u7801\u753b\u5e03/ }).click()
+  await page.evaluate(() => {
+    window.__fengshaCloseRequests = 0
+    window.fengshaDesktop?.onCloseRequested(() => { window.__fengshaCloseRequests += 1 })
+  })
   const closeEvent = page.waitForEvent('close', { timeout: 8_000 }).then(() => true).catch(() => false)
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close())
-  check(await closeEvent, '\u70b9\u51fb\u684c\u9762\u7a97\u53e3\u5173\u95ed\u6309\u94ae\u540e\uff0c\u65e0\u672a\u4fdd\u5b58\u53d8\u66f4\u65f6\u5e94\u6b63\u5e38\u9000\u51fa')
+  const closed = await closeEvent
+  const closeDiagnostics = closed ? null : {
+    rendererRequests: await page.evaluate(() => window.__fengshaCloseRequests).catch(() => -1),
+    persistedWorkspace: await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem('mermaid-workbench-v2') || '{}')?.state
+      const active = state?.documents?.find((document) => document.id === state?.activeDocumentId)
+      return { activeDocumentId: state?.activeDocumentId, activeEngine: active?.engine, activeTitle: active?.title }
+    }).catch(() => null),
+    sourceWorkspaceVisible: await page.locator('.editor-preview-workspace').isVisible().catch(() => false),
+    rendererErrors,
+    windows: await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((window) => ({
+      destroyed: window.isDestroyed(),
+      visible: window.isVisible(),
+      url: window.webContents.isDestroyed() ? '' : window.webContents.getURL(),
+    }))).catch(() => []),
+  }
+  check(closed, `\u70b9\u51fb\u684c\u9762\u7a97\u53e3\u5173\u95ed\u6309\u94ae\u540e\uff0c\u65e0\u672a\u4fdd\u5b58\u53d8\u66f4\u65f6\u5e94\u6b63\u5e38\u9000\u51fa\uff1a${JSON.stringify(closeDiagnostics)}`)
 
   if (failures.length) {
     throw new Error(`\u53ef\u89c6\u5316\u753b\u5e03\u56de\u5f52\u6d4b\u8bd5\u5931\u8d25\uff1a\n- ${failures.join('\n- ')}`)

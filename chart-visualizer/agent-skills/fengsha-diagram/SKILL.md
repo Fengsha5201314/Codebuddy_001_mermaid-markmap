@@ -19,6 +19,7 @@ Use the installed `fengsha-diagram` command. The desktop window does not need to
 3. Parse the final JSON line. Treat `acceptance: provisional` and `visualReview: pending` honestly: automated geometry passed, but aesthetics and business meaning were not human-approved.
 4. If exit code `6` is returned, read the receipt/diagnostics, change only the named `subject`, and use only a listed `supportedFixes` action. Retry at most twice. Read [references/diagnostics.md](references/diagnostics.md) when a quality failure occurs.
 5. Do not use `--force` unless the user explicitly permits replacing the named artifact. A failed delivery must leave the previous artifact untouched.
+6. Keep input, output, and receipt on three distinct paths. When several agents may target the same file, treat exit code `2` as a safe lock conflict and retry with a different output name or after the other task finishes.
 
 Do not claim that automated checks prove the process is factually correct. Ask the user or a vision-capable reviewer to approve semantics and aesthetics when final publication requires it.
 
@@ -28,6 +29,7 @@ Do not claim that automated checks prove the process is factually correct. Ask t
 fengsha-diagram visual-check input.mmd --quality professional --json
 fengsha-diagram compile plan.json --target mermaid -o process.mmd --json
 fengsha-diagram compile plan.json --target drawio -o process.drawio --json
+fengsha-diagram deliver process.drawio -o process.png --quality professional --receipt process.receipt.json --json
 fengsha-diagram render input.mmd -o draft.svg --quality standard --json
 ```
 

@@ -64,6 +64,12 @@ export interface CliDiagramMetadata {
   laneCount?: number
 }
 
+export interface CliTargetSnapshot {
+  kind: 'missing' | 'file' | 'other'
+  bytes?: number
+  sha256?: string
+}
+
 export interface CliRendererSuccess {
   ok: true
   artifact?: CliArtifactPayload
@@ -86,6 +92,8 @@ export interface CliWorkerEnvelope {
   outputPath?: string
   overwrite?: boolean
   receiptPath?: string
+  outputSnapshot?: CliTargetSnapshot
+  receiptSnapshot?: CliTargetSnapshot
 }
 
 export interface CliWorkerResult {

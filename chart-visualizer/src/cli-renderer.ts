@@ -1,6 +1,7 @@
 import { compileAiDrawioCode } from '@/lib/ai-drawio-plan'
 import { renderDiagram, isRenderError } from '@/lib/diagram-engine'
-import { validateDrawioXml } from '@/lib/drawio-xml'
+import { parseDrawioPageModels, validateDrawioXml } from '@/lib/drawio-xml'
+import { generateDrawioCliArtifact } from '@/lib/drawio-cli-artifact'
 import { compileFengshaPlanToMermaid, isFengshaPlanSource } from '@/lib/fengsha-plan'
 import {
   assessDrawioDiagram,
@@ -35,15 +36,20 @@ function textPayload(content: string, mimeType: string, extension: string): CliA
   return { encoding: 'utf8', content, mimeType, extension }
 }
 
-function drawioCounts(xml: string) {
-  const parsed = new DOMParser().parseFromString(xml, 'application/xml')
-  const vertices = [...parsed.querySelectorAll('mxCell[vertex="1"]')]
-  const laneCount = vertices.filter((cell) => /(?:^|;)swimlane(?:=|;)/i.test(cell.getAttribute('style') ?? '')).length
-  return {
-    nodeCount: vertices.length - laneCount,
-    edgeCount: parsed.querySelectorAll('mxCell[edge="1"]').length,
-    laneCount,
-  }
+function looksLikeDrawioSource(source: string): boolean {
+  const parsed = new DOMParser().parseFromString(source, 'application/xml')
+  if (!parsed.querySelector('parsererror') && parsed.documentElement.localName.toLowerCase() === 'mxfile') return true
+  return /^\s*(?:<\?xml\b[^?]*\?>\s*)?<mxfile\b/i.test(source)
+}
+
+async function artifactSha256(value: string | Blob): Promise<string> {
+  const bytes = value instanceof Blob ? await value.arrayBuffer() : new TextEncoder().encode(value)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, '0')).join('').toUpperCase()
+}
+
+function artifactBytes(value: string | Blob): number {
+  return value instanceof Blob ? value.size : new TextEncoder().encode(value).byteLength
 }
 
 async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResponse> {
@@ -55,12 +61,12 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
       const xml = compileAiDrawioCode(request.source, '')
       const validationError = validateDrawioXml(xml)
       if (validationError) return { ok: false, category: 'validation', message: validationError }
-      const receipt = await assessDrawioDiagram(xml, request.quality ?? 'professional', xml)
+      const receipt = await assessDrawioDiagram(xml, request.quality ?? 'professional', xml, request.source)
       if (!receipt.ok) return { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
       return {
         ok: true,
         artifact: textPayload(xml, 'application/vnd.jgraph.mxfile', 'drawio'),
-        metadata: drawioCounts(xml),
+        metadata: { nodeCount: receipt.counts.nodes, edgeCount: receipt.counts.edges, laneCount: receipt.counts.lanes },
         receipt,
       }
     } catch (error) {
@@ -76,7 +82,7 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
     try {
       const source = compileFengshaPlanToMermaid(request.source)
       const rendered = await renderDiagram(source, getDiagramTheme('paper'))
-      const receipt = await assessMermaidDiagram(source, rendered, request.quality ?? 'professional', source)
+      const receipt = await assessMermaidDiagram(source, rendered, request.quality ?? 'professional', source, request.source)
       if (!receipt.ok) return { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
       return {
         ok: true,
@@ -89,17 +95,64 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
     }
   }
 
-  if (request.operation === 'visual-check' && /^\s*<mxfile\b/i.test(request.source)) {
-    const receipt = await assessDrawioDiagram(request.source, request.quality ?? 'professional')
-    return receipt.ok
-      ? { ok: true, metadata: drawioCounts(request.source), receipt }
-      : { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
+  if (looksLikeDrawioSource(request.source)) {
+    const validationError = validateDrawioXml(request.source)
+    if (validationError) return { ok: false, category: 'validation', message: validationError }
+    const parsed = parseDrawioPageModels(request.source)
+    if (parsed.error) return { ok: false, category: 'validation', message: parsed.error }
+    const baseReceipt = await assessDrawioDiagram(request.source, request.quality ?? 'professional')
+    const metadata = {
+      nodeCount: baseReceipt.counts.nodes,
+      edgeCount: baseReceipt.counts.edges,
+      laneCount: baseReceipt.counts.lanes,
+      width: baseReceipt.dimensions?.width,
+      height: baseReceipt.dimensions?.height,
+    }
+    if (request.operation === 'validate') return { ok: true, metadata }
+    if (request.operation === 'visual-check') {
+      return baseReceipt.ok
+        ? { ok: true, metadata, receipt: baseReceipt }
+        : { ok: false, category: 'quality', message: qualityFailureMessage(baseReceipt), receipt: baseReceipt }
+    }
+    if (parsed.pages.length !== 1) {
+      return { ok: false, category: 'validation', message: 'draw.io 图片交付目前要求单页文件；请先拆分图页后再生成图片。' }
+    }
+    const options = request.render
+    if (!options) return { ok: false, category: 'internal', message: '缺少 draw.io 渲染参数。' }
+    try {
+      const artifact = await generateDrawioCliArtifact(request.source, options)
+      const receipt = await assessDrawioDiagram(
+        request.source,
+        request.operation === 'deliver' ? request.quality ?? 'professional' : 'standard',
+        artifact.canonicalSvg,
+      )
+      receipt.outputSha256 = await artifactSha256(artifact.data)
+      receipt.outputBytes = artifactBytes(artifact.data)
+      receipt.dimensions = { width: artifact.outputWidth, height: artifact.outputHeight }
+      if (!receipt.ok) return { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
+      return {
+        ok: true,
+        artifact: typeof artifact.data === 'string'
+          ? textPayload(artifact.data, artifact.mimeType, artifact.extension)
+          : await blobPayload(artifact.data, artifact.mimeType, artifact.extension),
+        metadata: {
+          ...metadata,
+          outputWidth: artifact.outputWidth,
+          outputHeight: artifact.outputHeight,
+          scale: artifact.scale,
+        },
+        receipt,
+      }
+    } catch (error) {
+      return { ok: false, category: 'render', message: error instanceof Error ? error.message : 'draw.io 图表导出失败。' }
+    }
   }
 
   const options = request.render
   if (!options) return { ok: false, category: 'internal', message: '缺少 Mermaid 渲染参数。' }
   try {
-    const mermaidSource = isFengshaPlanSource(request.source)
+    const planSource = isFengshaPlanSource(request.source)
+    const mermaidSource = planSource
       ? compileFengshaPlanToMermaid(request.source)
       : request.source
     if (request.operation === 'validate') {
@@ -112,7 +165,7 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
 
     if (request.operation === 'visual-check') {
       const result = await renderDiagram(mermaidSource, getDiagramTheme(options.theme))
-      const receipt = await assessMermaidDiagram(mermaidSource, result, request.quality ?? 'professional')
+      const receipt = await assessMermaidDiagram(mermaidSource, result, request.quality ?? 'professional', undefined, request.source)
       return receipt.ok
         ? { ok: true, metadata: { kind: result.kind, width: result.width, height: result.height }, receipt }
         : { ok: false, category: 'quality', message: qualityFailureMessage(receipt), receipt }
@@ -122,6 +175,7 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
       mermaidSource,
       options,
       request.operation === 'deliver' ? request.quality ?? 'professional' : 'standard',
+      request.source,
     )
     if (!delivered.receipt.ok) {
       return { ok: false, category: 'quality', message: qualityFailureMessage(delivered.receipt), receipt: delivered.receipt }
@@ -147,7 +201,7 @@ async function handleRequest(request: CliWorkerRequest): Promise<CliRendererResp
     const parsed = isRenderError(error) ? error : null
     return {
       ok: false,
-      category: request.operation === 'validate' ? 'validation' : 'render',
+      category: parsed ? 'validation' : request.operation === 'validate' ? 'validation' : 'render',
       message: parsed?.message ?? (error instanceof Error ? error.message : '图表处理失败。'),
       line: parsed?.line,
     }

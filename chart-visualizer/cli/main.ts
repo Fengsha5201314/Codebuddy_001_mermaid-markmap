@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import packageInfo from '../package.json' with { type: 'json' }
-import { CLI_WORKER_FLAG, type CliWorkerEnvelope, type CliWorkerResult } from '../src/cli-contracts.ts'
+import { CLI_WORKER_FLAG, type CliTargetSnapshot, type CliWorkerEnvelope, type CliWorkerResult } from '../src/cli-contracts.ts'
 import { CLI_EXIT, CLI_HELP, CliUsageError, parseCliArguments } from './args.ts'
+import { acquireCliTargetLocks, CliTargetLockedError, snapshotCliTarget } from './file-integrity.ts'
 
 const MAX_INPUT_BYTES = 5 * 1024 * 1024
 
@@ -147,6 +148,12 @@ function failureExit(category: CliWorkerResult['category']) {
   return CLI_EXIT.internal
 }
 
+function assertWritableTarget(label: string, filePath: string | undefined, snapshot: CliTargetSnapshot | undefined, force: boolean) {
+  if (!filePath || !snapshot) return
+  if (snapshot.kind === 'other') throw new CliUsageError(`${label}路径不是普通文件：${filePath}`)
+  if (snapshot.kind === 'file' && !force) throw new CliUsageError(`${label}已存在：${filePath}；如需覆盖请增加 --force。`)
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   const wantsJson = argv.includes('--json')
@@ -172,48 +179,53 @@ async function main() {
 
   const startedAt = Date.now()
   try {
-    if (parsed.output && !parsed.force && await exists(parsed.output)) {
-      throw new CliUsageError(`输出文件已存在：${parsed.output}；如需覆盖请增加 --force。`)
-    }
-    if (parsed.receipt && !parsed.force && await exists(parsed.receipt)) {
-      throw new CliUsageError(`质量回执已存在：${parsed.receipt}；如需覆盖请增加 --force。`)
-    }
     const source = await readSource(parsed.input)
     if (!source.trim()) throw new CliUsageError('输入内容为空。')
-    const result = await runWorker({
-      request: { ...parsed.request, source },
-      outputPath: parsed.output,
-      overwrite: parsed.force,
-      receiptPath: parsed.receipt,
-    }, parsed.timeoutMs)
-    if (!result.ok) {
+    const releaseLocks = await acquireCliTargetLocks([parsed.output, parsed.receipt])
+    try {
+      const outputSnapshot = parsed.output ? await snapshotCliTarget(parsed.output) : undefined
+      const receiptSnapshot = parsed.receipt ? await snapshotCliTarget(parsed.receipt) : undefined
+      assertWritableTarget('输出文件', parsed.output, outputSnapshot, parsed.force)
+      assertWritableTarget('质量回执', parsed.receipt, receiptSnapshot, parsed.force)
+      const result = await runWorker({
+        request: { ...parsed.request, source },
+        outputPath: parsed.output,
+        overwrite: parsed.force,
+        receiptPath: parsed.receipt,
+        outputSnapshot,
+        receiptSnapshot,
+      }, parsed.timeoutMs)
+      if (!result.ok) {
+        emit({
+          ok: false,
+          schemaVersion: 'fengsha.cli/result/v1',
+          command: parsed.command,
+          version: packageInfo.version,
+          input: parsed.input,
+          output: parsed.output,
+          durationMs: Date.now() - startedAt,
+          error: { category: result.category ?? 'internal', message: result.message ?? '命令执行失败。' },
+          receipt: result.receipt,
+        }, parsed.json)
+        return failureExit(result.category)
+      }
       emit({
-        ok: false,
+        ok: true,
         schemaVersion: 'fengsha.cli/result/v1',
         command: parsed.command,
         version: packageInfo.version,
         input: parsed.input,
-        output: parsed.output,
+        output: result.outputPath,
         durationMs: Date.now() - startedAt,
-        error: { category: result.category ?? 'internal', message: result.message ?? '命令执行失败。' },
+        diagram: result.metadata as Record<string, unknown> | undefined,
         receipt: result.receipt,
       }, parsed.json)
-      return failureExit(result.category)
+      return CLI_EXIT.success
+    } finally {
+      await releaseLocks()
     }
-    emit({
-      ok: true,
-      schemaVersion: 'fengsha.cli/result/v1',
-      command: parsed.command,
-      version: packageInfo.version,
-      input: parsed.input,
-      output: result.outputPath,
-      durationMs: Date.now() - startedAt,
-      diagram: result.metadata as Record<string, unknown> | undefined,
-      receipt: result.receipt,
-    }, parsed.json)
-    return CLI_EXIT.success
   } catch (error) {
-    const usage = error instanceof CliUsageError
+    const usage = error instanceof CliUsageError || error instanceof CliTargetLockedError
     const timeout = error instanceof WorkerTimeoutError
     emit({
       ok: false,

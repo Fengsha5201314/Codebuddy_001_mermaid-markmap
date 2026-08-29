@@ -8,6 +8,7 @@ export interface AiTaskSnapshot {
   engine: AiTaskEngine
   documentId: string
   running: boolean
+  applying: boolean
   streamText: string
   workflowStage: AiWorkflowStage | null
   requestError: string | null
@@ -48,15 +49,16 @@ export const useAiTaskStore = create<AiTaskState>()(persist((set) => ({
   partialize: (state) => ({ tasks: state.tasks }),
   merge: (persistedState, currentState) => {
     const saved = persistedState as { tasks?: Record<string, AiTaskSnapshot> } | undefined
-    const tasks = Object.fromEntries(Object.entries(saved?.tasks ?? {}).map(([key, task]) => [key, task.running
+    const tasks = Object.fromEntries(Object.entries(saved?.tasks ?? {}).map(([key, task]) => [key, task.running || task.applying
       ? {
           ...task,
           running: false,
+          applying: false,
           workflowStage: 'failed' as const,
           requestError: task.requestError || '应用在任务执行期间关闭，已保留中断前输出；请重新发送以继续。',
           completedAt: task.completedAt ?? new Date().toISOString(),
         }
-      : task]))
+      : { ...task, applying: false }]))
     return { ...currentState, tasks }
   },
 }))
@@ -84,6 +86,7 @@ export function beginAiTask(
     engine,
     documentId,
     running: true,
+    applying: false,
     streamText: '',
     workflowStage: null,
     requestError: null,

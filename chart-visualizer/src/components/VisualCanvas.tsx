@@ -21,8 +21,8 @@ export interface VisualCanvasHandle {
   captureXml: () => Promise<string>
   exportDiagram: (format: DrawioExportFormat, options?: DrawioExportOptions) => Promise<DrawioExportResult>
   fit: () => void
-  loadXml: (xml: string) => void
-  loadMermaid: (mermaid: string) => void
+  loadXml: (xml: string) => Promise<void>
+  loadMermaid: (mermaid: string) => Promise<void>
 }
 
 interface VisualCanvasProps {
@@ -32,6 +32,14 @@ interface VisualCanvasProps {
 }
 
 const CANDIDATE_STABILIZATION_DELAYS_MS = [0, 120, 240, 420, 700, 1_000]
+
+interface PendingCandidateApplication {
+  documentId: string
+  validationId: number
+  rollbackXml: string
+  resolve: () => void
+  reject: (error: Error) => void
+}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
@@ -57,7 +65,10 @@ async function exportStableCandidate(
     const xml = [exportedXml, autosaveXml].find((candidate) => candidate && !validateDrawioXml(candidate))
       || exportedXml
       || autosaveXml
-    const svgResult = await bridge.exportDiagram('svg')
+    // Bind the SVG to the exact XML snapshot that was just captured. A second
+    // live-canvas export can otherwise race with autosave or a user edit and
+    // certify a different graph than the XML being committed.
+    const svgResult = await bridge.exportDiagram('svg', { xml })
     const rawSvg = typeof svgResult.data === 'string' ? svgResult.data : svgResult.xml ?? ''
     const svg = rawSvg ? makePortableDrawioSvg(rawSvg) : ''
     if (xml && hasMeaningfulDrawioSvg(svg)) return { xml, svg }
@@ -100,6 +111,8 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
   const pendingXmlRef = useRef<string | null>(null)
   const pendingAutosaveXmlRef = useRef<string | null>(null)
   const validatingCandidateRef = useRef(needsInitialVisualXmlCapture(document))
+  const pendingApplicationRef = useRef<PendingCandidateApplication | null>(null)
+  const validationIdRef = useRef(0)
   const preferredRuntimeMode = useWorkspaceStore((state) => state.preferences.visualEditorMode)
   const allowOnlineFallback = useWorkspaceStore((state) => state.preferences.visualEditorOnlineFallback)
   const [runtimeMode, setRuntimeMode] = useState(preferredRuntimeMode)
@@ -128,34 +141,78 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
     },
     loadXml: (xml) => {
       const bridge = bridgeRef.current
-      if (!bridge) throw new Error('可视化画布尚未连接。')
-      pendingMermaidRef.current = null
-      pendingXmlRef.current = xml
-      pendingAutosaveXmlRef.current = null
-      validatingCandidateRef.current = true
-      connectionStartedRef.current = performance.now()
-      setReady(false)
-      setStatus('AI 修改已接收，正在重载画布')
-      bridge.load({ type: 'xml', xml })
+      if (!bridge) return Promise.reject(new Error('可视化画布尚未连接。'))
+      pendingApplicationRef.current?.reject(new Error('已有新的候选开始应用，上一候选已取消。'))
+      const validationId = ++validationIdRef.current
+      return new Promise<void>((resolve, reject) => {
+        const application = {
+          documentId: document.id,
+          validationId,
+          rollbackXml: lastLocalXmlRef.current,
+          resolve,
+          reject,
+        }
+        pendingApplicationRef.current = application
+        pendingMermaidRef.current = null
+        pendingXmlRef.current = xml
+        pendingAutosaveXmlRef.current = null
+        validatingCandidateRef.current = true
+        connectionStartedRef.current = performance.now()
+        setReady(false)
+        setStatus('AI 修改已接收，正在重载画布')
+        try {
+          bridge.load({ type: 'xml', xml })
+        } catch (error) {
+          if (pendingApplicationRef.current === application) {
+            pendingApplicationRef.current = null
+            pendingXmlRef.current = null
+            pendingAutosaveXmlRef.current = null
+            validatingCandidateRef.current = false
+          }
+          reject(error instanceof Error ? error : new Error('画布无法载入 AI 候选。'))
+        }
+      })
     },
     loadMermaid: (mermaid) => {
       const bridge = bridgeRef.current
-      if (!bridge) throw new Error('可视化画布尚未连接。')
-      pendingMermaidRef.current = mermaid
-      pendingXmlRef.current = null
-      pendingAutosaveXmlRef.current = null
-      validatingCandidateRef.current = true
-      connectionStartedRef.current = performance.now()
-      setReady(false)
-      setStatus('AI 结构已生成，正在转换为可视化画布')
-      bridge.load({
-        type: 'mermaid',
-        mermaid: toDrawioCompatibleMermaid(mermaid).source,
-        wrap: true,
-        sourceMetadataKey: 'mermaidSource',
+      if (!bridge) return Promise.reject(new Error('可视化画布尚未连接。'))
+      pendingApplicationRef.current?.reject(new Error('已有新的候选开始应用，上一候选已取消。'))
+      const validationId = ++validationIdRef.current
+      return new Promise<void>((resolve, reject) => {
+        const application = {
+          documentId: document.id,
+          validationId,
+          rollbackXml: lastLocalXmlRef.current,
+          resolve,
+          reject,
+        }
+        pendingApplicationRef.current = application
+        pendingMermaidRef.current = mermaid
+        pendingXmlRef.current = null
+        pendingAutosaveXmlRef.current = null
+        validatingCandidateRef.current = true
+        connectionStartedRef.current = performance.now()
+        setReady(false)
+        setStatus('AI 结构已生成，正在转换为可视化画布')
+        try {
+          bridge.load({
+            type: 'mermaid',
+            mermaid: toDrawioCompatibleMermaid(mermaid).source,
+            wrap: true,
+            sourceMetadataKey: 'mermaidSource',
+          })
+        } catch (error) {
+          if (pendingApplicationRef.current === application) {
+            pendingApplicationRef.current = null
+            pendingMermaidRef.current = null
+            pendingAutosaveXmlRef.current = null
+            validatingCandidateRef.current = false
+          }
+          reject(error instanceof Error ? error : new Error('画布无法转换 AI 结构。'))
+        }
       })
     },
-  }), [])
+  }), [document.id])
 
   useEffect(() => {
     setRuntimeMode(preferredRuntimeMode)
@@ -165,6 +222,7 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
     const iframe = iframeRef.current
     if (!iframe) return
 
+    ++validationIdRef.current
     setReady(false)
     setSaving(false)
     setError(null)
@@ -177,6 +235,16 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
     validatingCandidateRef.current = Boolean(pendingMermaidRef.current)
 
     const handleRuntimeFailure = (message: string) => {
+      ++validationIdRef.current
+      const pendingApplication = pendingApplicationRef.current
+      if (pendingApplication?.documentId === document.id) {
+        pendingApplicationRef.current = null
+        pendingMermaidRef.current = null
+        pendingXmlRef.current = null
+        pendingAutosaveXmlRef.current = null
+        validatingCandidateRef.current = false
+        pendingApplication.reject(new Error(message))
+      }
       const fallback = getOnlineFallback(runtime, allowOnlineFallback, window.location.href)
       if (fallback) {
         setStatus('本地引擎启动异常，正在切换官方在线备用')
@@ -212,20 +280,30 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
         const pendingMermaid = pendingMermaidRef.current
         const pendingXml = pendingXmlRef.current
         if (validatingCandidateRef.current && (pendingMermaid || pendingXml)) {
+          const pendingApplication = pendingApplicationRef.current
+          const validationId = validationIdRef.current
+          const rollbackXml = pendingApplication?.rollbackXml ?? lastLocalXmlRef.current
           setReady(false)
           setStatus('图形已载入，正在执行交付前检查')
-          const initialConversion = Boolean(pendingMermaid && document.drawioXml === EMPTY_DRAWIO_XML && !document.lastGood)
+          const initialConversion = Boolean(!pendingApplication && pendingMermaid && document.drawioXml === EMPTY_DRAWIO_XML && !document.lastGood)
           void exportStableCandidate(bridge, () => pendingAutosaveXmlRef.current).then(({ xml, svg }) => (
             assessDrawioDiagram(xml, initialConversion ? 'standard' : 'professional', svg)
               .then((quality) => ({ xml, quality }))
           )).then(({ xml, quality }) => {
+            if (validationIdRef.current !== validationId) {
+              throw new Error('候选应用已被新的画布操作取代。')
+            }
+            if (pendingApplication && (
+              pendingApplicationRef.current !== pendingApplication
+              || pendingApplication.validationId !== validationId
+            )) {
+              throw new Error('候选应用已被新的画布操作取代。')
+            }
+            if (pendingApplication && pendingApplication.documentId !== document.id) {
+              throw new Error('候选应用期间已切换画布。')
+            }
             if (!quality.ok) throw new Error(qualityFailureMessage(quality))
-            pendingMermaidRef.current = null
-            pendingXmlRef.current = null
-            pendingAutosaveXmlRef.current = null
-            validatingCandidateRef.current = false
-            lastLocalXmlRef.current = xml
-            useWorkspaceStore.getState().commitValidatedCandidate(document.id, xml, {
+            const committed = useWorkspaceStore.getState().commitValidatedCandidate(document.id, xml, {
               engine: 'drawio',
               source: xml,
               sourceSha256: quality.inputSha256,
@@ -234,18 +312,30 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
               checksPassed: quality.checks.filter((item) => item.status === 'passed').length,
               checksTotal: quality.checks.length,
             }, pendingMermaid ?? undefined)
+            if (!committed) throw new Error('候选通过检查，但原画布已不存在或已切换，未执行提交。')
+            pendingMermaidRef.current = null
+            pendingXmlRef.current = null
+            pendingAutosaveXmlRef.current = null
+            validatingCandidateRef.current = false
+            lastLocalXmlRef.current = xml
+            if (pendingApplicationRef.current === pendingApplication) pendingApplicationRef.current = null
+            pendingApplication?.resolve()
             setReady(true)
             setStatus(elapsed > 0 ? `画布已就绪 · ${(elapsed / 1000).toFixed(1)}s` : '画布已就绪')
             onNotice(document.drawioXml === EMPTY_DRAWIO_XML ? '可视化画布已校验并自动同步' : 'AI 新画布已通过专业检查并安全应用')
           }).catch((caught) => {
+            if (validationIdRef.current !== validationId) return
+            if (pendingApplication && pendingApplicationRef.current !== pendingApplication) return
             pendingMermaidRef.current = null
             pendingXmlRef.current = null
             pendingAutosaveXmlRef.current = null
             validatingCandidateRef.current = false
             setReady(false)
-            const trusted = document.lastGood?.engine === 'drawio' ? document.lastGood.source : lastLocalXmlRef.current
-            if (trusted) bridge.load({ type: 'xml', xml: trusted })
-            onNotice(`候选未通过检查，已保留原画布：${caught instanceof Error ? caught.message : '质量检查失败'}`)
+            const failure = caught instanceof Error ? caught : new Error('质量检查失败')
+            if (pendingApplicationRef.current === pendingApplication) pendingApplicationRef.current = null
+            pendingApplication?.reject(failure)
+            if (rollbackXml) bridge.load({ type: 'xml', xml: rollbackXml })
+            onNotice(`候选未通过检查，已保留原画布：${failure.message}`)
           })
           return
         }
@@ -300,6 +390,16 @@ export const VisualCanvas = forwardRef<VisualCanvasHandle, VisualCanvasProps>(fu
     }, runtime.mode === 'local' ? 10_000 : 18_000)
 
     return () => {
+      ++validationIdRef.current
+      const pendingApplication = pendingApplicationRef.current
+      if (pendingApplication?.documentId === document.id) {
+        pendingApplicationRef.current = null
+        pendingMermaidRef.current = null
+        pendingXmlRef.current = null
+        pendingAutosaveXmlRef.current = null
+        validatingCandidateRef.current = false
+        pendingApplication.reject(new Error('候选应用期间画布已切换或关闭，原画布保持不变。'))
+      }
       if (connectionTimerRef.current !== null) window.clearTimeout(connectionTimerRef.current)
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
       bridge.destroy()

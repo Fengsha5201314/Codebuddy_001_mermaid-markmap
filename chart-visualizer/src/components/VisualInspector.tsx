@@ -4,8 +4,8 @@ import type { DiagramDocument } from '@/types'
 
 interface VisualInspectorProps {
   document: DiagramDocument
-  onApplyXml: (xml: string) => void
-  onApplyMermaid: (mermaid: string) => void
+  onApplyXml: (xml: string) => Promise<void>
+  onApplyMermaid: (mermaid: string) => Promise<void>
   onClose: () => void
   onOpenSettings: () => void
 }

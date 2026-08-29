@@ -77,7 +77,7 @@ export function AiConversationPanel({
             {projectThreads.map((thread) => <option key={thread.id} value={thread.id}>{thread.title}</option>)}
           </select>
           <button type="button" onClick={onCreateThread} title="开始新对话"><MessageSquarePlus size={15} /><span>新对话</span></button>
-          {activeThread && <button type="button" className="ai-delete-chat" onClick={onDeleteThread} title="删除当前对话" aria-label="删除当前对话"><Trash2 size={15} /></button>}
+          {activeThread && <button type="button" className="ai-delete-chat" onClick={onDeleteThread} disabled={running} title={running ? 'AI 任务运行中，完成或停止后可删除对话' : '删除当前对话'} aria-label={running ? 'AI 任务运行中，暂不能删除当前对话' : '删除当前对话'}><Trash2 size={15} /></button>}
         </div>
       </header>
 

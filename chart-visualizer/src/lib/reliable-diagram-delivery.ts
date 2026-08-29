@@ -1,5 +1,5 @@
 import { generateDiagramArtifact, type GeneratedDiagramArtifact } from '@/lib/diagram-artifact'
-import { validateDrawioXml } from '@/lib/drawio-xml'
+import { parseDrawioPageModels, type DrawioPageModel } from '@/lib/drawio-xml'
 import {
   estimateSvgTextWidth,
   findClippedRenderedNodeLabelDetails,
@@ -67,6 +67,7 @@ interface Rect {
   width: number
   height: number
   lane: boolean
+  group: boolean
   label: string
   fontSize: number
 }
@@ -128,11 +129,45 @@ function parseSvg(svg: string): SVGSVGElement | null {
 }
 
 function svgCounts(svg: SVGSVGElement) {
-  const nodes = svg.querySelectorAll('.node').length
+  const nodes = svg.querySelectorAll([
+    '.node',
+    '.actor',
+    '.classGroup',
+    '.statediagram-state',
+    '.entityBox',
+    '.task',
+    '.mindmap-node',
+    '.architecture-service',
+    '.architecture-junction',
+    '.person',
+    '.system',
+    '.container',
+    '.component',
+  ].join(',')).length
   const edgeGroups = svg.querySelectorAll('.edgePath').length
   const edges = edgeGroups || svg.querySelectorAll('path.flowchart-link, .messageLine0, .messageLine1').length
   const lanes = svg.querySelectorAll('.cluster, .lane, [data-lane]').length
   return { nodes, edges, lanes }
+}
+
+function hasMermaidBusinessContent(svg: SVGSVGElement, kind: RenderResult['kind']): boolean {
+  const selectors: Partial<Record<RenderResult['kind'], string>> = {
+    flowchart: '.node',
+    swimlane: '.node',
+    architecture: '.architecture-service, .architecture-junction',
+    sequence: '.actor',
+    class: '.classGroup, .node',
+    state: '.statediagram-state, .node',
+    er: '.entityBox, .node',
+    gantt: '.task',
+    mindmap: '.mindmap-node',
+    journey: '.task',
+    c4: '.person, .system, .container, .component',
+  }
+  const selector = selectors[kind]
+  if (selector) return Boolean(svg.querySelector(selector))
+  return [...svg.querySelectorAll('text, foreignObject')]
+    .some((entry) => (entry.textContent ?? '').replace(/\u00a0/g, ' ').trim().length > 0)
 }
 
 function inspectSvgMarkup(
@@ -195,7 +230,18 @@ function inspectSvgMarkup(
     })
   }
 
-  return { diagnostics, counts: svgCounts(parsed) }
+  const counts = svgCounts(parsed)
+  if (!hasMermaidBusinessContent(parsed, result.kind)) {
+    diagnostics.push({
+      code: 'structure/empty-diagram',
+      severity: 'error',
+      message: 'Mermaid 图中没有可交付的业务节点。',
+      subject: { kind: 'diagram' },
+      supportedFixes: ['add-node', 'regenerate-plan'],
+    })
+  }
+
+  return { diagnostics, counts }
 }
 
 function inspectMountedMermaidSvg(svgMarkup: string, profile: DiagramQualityProfile): DiagramDiagnostic[] {
@@ -256,7 +302,7 @@ function plainDrawioText(value: string): string {
   return (container.textContent ?? '').replace(/\u00a0/g, ' ').trim()
 }
 
-function drawioCellEntries(parsed: Document): DrawioCellEntry[] {
+function drawioCellEntries(parsed: ParentNode): DrawioCellEntry[] {
   return [...parsed.querySelectorAll('mxCell')].map((cell) => {
     const parent = cell.parentElement
     const wrapped = parent && /^(?:userobject|object)$/i.test(parent.tagName)
@@ -268,7 +314,17 @@ function drawioCellAttribute(entry: DrawioCellEntry, name: string): string | nul
   return entry.holder.getAttribute(name) ?? entry.cell.getAttribute(name)
 }
 
-function drawioRectangles(parsed: Document): Rect[] {
+function drawioCellLabel(entry: DrawioCellEntry): string {
+  const candidates = [
+    entry.holder.getAttribute('value'),
+    entry.holder.getAttribute('label'),
+    entry.cell.getAttribute('value'),
+    entry.cell.getAttribute('label'),
+  ]
+  return plainDrawioText(candidates.find((value) => value?.trim()) ?? '')
+}
+
+function drawioRectangles(parsed: ParentNode): Rect[] {
   const entries = drawioCellEntries(parsed)
   const cells = new Map(entries.map((entry) => [drawioCellAttribute(entry, 'id') ?? '', entry]))
   const cache = new Map<string, { x: number; y: number }>()
@@ -294,9 +350,10 @@ function drawioRectangles(parsed: Document): Rect[] {
     const geometry = entry.cell.querySelector(':scope > mxGeometry')
     const width = Number.parseFloat(geometry?.getAttribute('width') ?? '')
     const height = Number.parseFloat(geometry?.getAttribute('height') ?? '')
-    if (!id || !Number.isFinite(width) || !Number.isFinite(height)) return []
-    const point = origin(id)
     const style = drawioCellAttribute(entry, 'style') ?? ''
+    const edgeLabel = /(?:^|;)edgeLabel(?:=|;)/i.test(style)
+    if (!id || edgeLabel || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return []
+    const point = origin(id)
     return [{
       id,
       parent: drawioCellAttribute(entry, 'parent') ?? '1',
@@ -305,43 +362,34 @@ function drawioRectangles(parsed: Document): Rect[] {
       width,
       height,
       lane: /(?:^|;)swimlane(?:=|;)/i.test(style),
-      label: plainDrawioText(
-        drawioCellAttribute(entry, 'value')
-        ?? entry.holder.getAttribute('label')
-        ?? '',
-      ),
+      group: /(?:^|;)group(?:=|;)/i.test(style),
+      label: drawioCellLabel(entry),
       fontSize: Number.parseFloat(styleValue(style, 'fontSize') ?? '') || 14,
     }]
   })
 }
 
-function drawioDiagnostics(
-  xml: string,
+function drawioPageEvidence(page: DrawioPageModel, evidence: DiagramDiagnostic['evidence'] = {}): DiagramDiagnostic['evidence'] {
+  return { pageIndex: page.pageIndex + 1, pageId: page.pageId, pageName: page.pageName, ...evidence }
+}
+
+function drawioPageDiagnostics(
+  page: DrawioPageModel,
   profile: DiagramQualityProfile,
-  allowOpaqueCompressedPage = false,
 ): {
   diagnostics: DiagramDiagnostic[]
   counts: DiagramQualityReceipt['counts']
-  dimensions?: DiagramQualityReceipt['dimensions']
+  dimensions: NonNullable<DiagramQualityReceipt['dimensions']>
 } {
   const diagnostics: DiagramDiagnostic[] = []
-  const validationError = validateDrawioXml(xml)
-  if (validationError) {
-    diagnostics.push({
-      code: 'structure/drawio-invalid',
-      severity: 'error' as const,
-      message: validationError,
-      subject: { kind: 'source' as const },
-      supportedFixes: ['repair-xml', 'regenerate-plan'],
-    })
-    return { diagnostics, counts: { nodes: 0, edges: 0, lanes: 0 }, dimensions: undefined }
-  }
-
-  const parsed = new DOMParser().parseFromString(xml, 'application/xml')
-  const rectangles = drawioRectangles(parsed)
+  const rectangles = drawioRectangles(page.model)
   const lanes = rectangles.filter((item) => item.lane)
-  const nodes = rectangles.filter((item) => !item.lane)
-  const parentById = new Map(rectangles.map((item) => [item.id, item.parent]))
+  const nodes = rectangles.filter((item) => !item.lane && !item.group)
+  const cells = drawioCellEntries(page.model)
+  const parentById = new Map(cells.map((entry) => [
+    drawioCellAttribute(entry, 'id') ?? '',
+    drawioCellAttribute(entry, 'parent') ?? '',
+  ]))
   const isAncestor = (candidateId: string, childId: string): boolean => {
     const visited = new Set<string>()
     let parent = parentById.get(childId)
@@ -352,14 +400,15 @@ function drawioDiagnostics(
     }
     return false
   }
-  if (!nodes.length && !allowOpaqueCompressedPage) {
-    diagnostics.push(diagnostic(
-      'structure/empty-diagram',
-      '图页中没有可交付的业务节点。',
-      { kind: 'diagram' },
-      ['add-node', 'regenerate-plan'],
-      profile,
-    ))
+  if (!nodes.length) {
+    diagnostics.push({
+      code: 'structure/empty-diagram',
+      severity: 'error',
+      message: `${page.pageName}中没有可交付的业务节点。`,
+      subject: { kind: 'diagram' },
+      supportedFixes: ['add-node', 'regenerate-plan'],
+      evidence: drawioPageEvidence(page),
+    })
   }
   for (const node of nodes) {
     if (![node.x, node.y, node.width, node.height].every(Number.isFinite) || node.width <= 0 || node.height <= 0) {
@@ -368,7 +417,7 @@ function drawioDiagnostics(
         severity: 'error',
         message: `节点 ${node.id} 缺少有效几何尺寸。`,
         subject: { kind: 'node', id: node.id },
-        evidence: { x: node.x, y: node.y, width: node.width, height: node.height },
+        evidence: drawioPageEvidence(page, { x: node.x, y: node.y, width: node.width, height: node.height }),
         supportedFixes: ['grow-node', 'move-node'],
       })
       continue
@@ -385,7 +434,7 @@ function drawioDiagnostics(
           { kind: 'node', id: node.id, field: 'label' },
           ['wrap-label', 'grow-node', 'shorten-label'],
           profile,
-          { requiredHeight, availableHeight: Math.round(node.height), availableWidth: Math.round(availableWidth) },
+          drawioPageEvidence(page, { requiredHeight, availableHeight: Math.round(node.height), availableWidth: Math.round(availableWidth) }),
         ))
       }
     }
@@ -407,7 +456,7 @@ function drawioDiagnostics(
           { kind: 'node', id: a.id },
           ['increase-spacing', 'move-node', 'change-layout'],
           profile,
-          { otherNodeId: b.id, overlapWidth: Math.round(overlapWidth), overlapHeight: Math.round(overlapHeight) },
+          drawioPageEvidence(page, { otherNodeId: b.id, overlapWidth: Math.round(overlapWidth), overlapHeight: Math.round(overlapHeight) }),
         ))
       }
     }
@@ -415,27 +464,37 @@ function drawioDiagnostics(
 
   const laneById = new Map(lanes.map((lane) => [lane.id, lane]))
   for (const node of nodes) {
-    const lane = laneById.get(node.parent)
-    if (!lane) continue
-    const contained = node.x >= lane.x - 1
-      && node.y >= lane.y - 1
-      && node.x + node.width <= lane.x + lane.width + 1
-      && node.y + node.height <= lane.y + lane.height + 1
-    if (!contained) {
-      diagnostics.push(diagnostic(
-        'layout/lane-overflow',
-        `节点 ${node.id} 超出了泳道 ${lane.id} 的边界。`,
-        { kind: 'node', id: node.id },
-        ['grow-lane', 'move-node', 'reflow-lane'],
-        profile,
-        { laneId: lane.id },
-      ))
+    const visited = new Set<string>()
+    let ancestorId = parentById.get(node.id)
+    while (ancestorId && !visited.has(ancestorId)) {
+      visited.add(ancestorId)
+      const lane = laneById.get(ancestorId)
+      if (lane) {
+        const contained = node.x >= lane.x - 1
+          && node.y >= lane.y - 1
+          && node.x + node.width <= lane.x + lane.width + 1
+          && node.y + node.height <= lane.y + lane.height + 1
+        if (!contained) {
+          diagnostics.push(diagnostic(
+            'layout/lane-overflow',
+            `节点 ${node.id} 超出了泳道 ${lane.id} 的边界。`,
+            { kind: 'node', id: node.id },
+            ['grow-lane', 'move-node', 'reflow-lane'],
+            profile,
+            drawioPageEvidence(page, { laneId: lane.id }),
+          ))
+        }
+      }
+      ancestorId = parentById.get(ancestorId)
     }
   }
   for (let left = 0; left < lanes.length; left += 1) {
     for (let right = left + 1; right < lanes.length; right += 1) {
       const a = lanes[left]
       const b = lanes[right]
+      // A parent swimlane is a container for nested lanes, so their shared
+      // area is intentional and must not be reported as a sibling collision.
+      if (isAncestor(a.id, b.id) || isAncestor(b.id, a.id)) continue
       const overlapWidth = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
       const overlapHeight = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
       if (overlapWidth > 2 && overlapHeight > 2) {
@@ -445,13 +504,12 @@ function drawioDiagnostics(
           { kind: 'lane', id: a.id },
           ['reflow-lanes', 'move-lane'],
           profile,
-          { otherLaneId: b.id, overlapWidth: Math.round(overlapWidth), overlapHeight: Math.round(overlapHeight) },
+          drawioPageEvidence(page, { otherLaneId: b.id, overlapWidth: Math.round(overlapWidth), overlapHeight: Math.round(overlapHeight) }),
         ))
       }
     }
   }
 
-  const cells = drawioCellEntries(parsed)
   const ids = new Set(cells.map((entry) => drawioCellAttribute(entry, 'id') ?? ''))
   const edges = cells.filter((entry) => drawioCellAttribute(entry, 'edge') === '1')
   for (const edge of edges) {
@@ -464,7 +522,7 @@ function drawioDiagnostics(
           severity: 'error',
           message: `连线 ${id} 的 ${field} 引用了不存在的节点。`,
           subject: { kind: 'edge', id, field },
-          evidence: { reference },
+          evidence: drawioPageEvidence(page, { reference }),
           supportedFixes: ['repair-reference', 'delete-edge'],
         })
       }
@@ -482,7 +540,7 @@ function drawioDiagnostics(
       { kind: 'diagram' },
       ['move-node', 'expand-canvas'],
       profile,
-      { minX: Math.round(minX), minY: Math.round(minY) },
+      drawioPageEvidence(page, { minX: Math.round(minX), minY: Math.round(minY) }),
     ))
   }
 
@@ -491,6 +549,46 @@ function drawioDiagnostics(
     counts: { nodes: nodes.length, edges: edges.length, lanes: lanes.length },
     dimensions: { width: Math.ceil(maxX - minX), height: Math.ceil(maxY - minY) },
   }
+}
+
+function drawioDiagnostics(
+  xml: string,
+  profile: DiagramQualityProfile,
+): {
+  diagnostics: DiagramDiagnostic[]
+  counts: DiagramQualityReceipt['counts']
+  dimensions?: DiagramQualityReceipt['dimensions']
+} {
+  const parsed = parseDrawioPageModels(xml)
+  if (parsed.error) {
+    return {
+      diagnostics: [{
+        code: 'structure/drawio-invalid',
+        severity: 'error',
+        message: parsed.error,
+        subject: { kind: 'source' },
+        supportedFixes: ['repair-xml', 'regenerate-plan'],
+      }],
+      counts: { nodes: 0, edges: 0, lanes: 0 },
+      dimensions: undefined,
+    }
+  }
+
+  const aggregate = {
+    diagnostics: [] as DiagramDiagnostic[],
+    counts: { nodes: 0, edges: 0, lanes: 0 },
+    dimensions: { width: 1, height: 1 },
+  }
+  for (const page of parsed.pages) {
+    const inspection = drawioPageDiagnostics(page, profile)
+    aggregate.diagnostics.push(...inspection.diagnostics)
+    aggregate.counts.nodes += inspection.counts.nodes
+    aggregate.counts.edges += inspection.counts.edges
+    aggregate.counts.lanes += inspection.counts.lanes
+    aggregate.dimensions.width = Math.max(aggregate.dimensions.width, inspection.dimensions.width)
+    aggregate.dimensions.height = Math.max(aggregate.dimensions.height, inspection.dimensions.height)
+  }
+  return aggregate
 }
 
 function qualityChecks(diagnostics: DiagramDiagnostic[]): DiagramQualityCheck[] {
@@ -512,6 +610,7 @@ async function receipt(
   counts: DiagramQualityReceipt['counts'],
   dimensions?: DiagramQualityReceipt['dimensions'],
   output?: string | Blob,
+  originalInput = source,
 ): Promise<DiagramQualityReceipt> {
   const checks = qualityChecks(diagnostics)
   return {
@@ -521,7 +620,7 @@ async function receipt(
     ok: !diagnostics.some((item) => item.severity === 'error'),
     acceptance: diagnostics.some((item) => item.severity === 'error') ? 'rejected' : 'provisional',
     generatedAt: new Date().toISOString(),
-    inputSha256: await sha256(source),
+    inputSha256: await sha256(originalInput),
     ...(output ? {
       outputSha256: await sha256(await artifactText(output)),
       outputBytes: output instanceof Blob ? output.size : byteLength(output),
@@ -544,6 +643,7 @@ export async function assessMermaidDiagram(
   result: RenderResult,
   profile: DiagramQualityProfile = 'professional',
   output?: string | Blob,
+  originalInput?: string,
 ): Promise<DiagramQualityReceipt> {
   const finalSvg = typeof output === 'string' && /<svg\b/i.test(output) ? output : result.svg
   const staticInspection = inspectSvgMarkup(finalSvg, result, profile)
@@ -561,6 +661,7 @@ export async function assessMermaidDiagram(
     staticInspection.counts,
     { width: Math.ceil(result.width), height: Math.ceil(result.height) },
     output,
+    originalInput,
   )
 }
 
@@ -568,9 +669,10 @@ export async function assessDrawioDiagram(
   xml: string,
   profile: DiagramQualityProfile = 'professional',
   output?: string | Blob,
+  originalInput?: string,
 ): Promise<DiagramQualityReceipt> {
   const outputSvg = typeof output === 'string' && /<svg\b/i.test(output) ? output : ''
-  const inspection = drawioDiagnostics(xml, profile, Boolean(outputSvg))
+  const inspection = drawioDiagnostics(xml, profile)
   if (outputSvg) {
     const parsed = parseSvg(outputSvg)
     if (!parsed) {
@@ -612,16 +714,17 @@ export async function assessDrawioDiagram(
       }
     }
   }
-  return receipt('drawio', xml, profile, inspection.diagnostics, inspection.counts, inspection.dimensions, output)
+  return receipt('drawio', xml, profile, inspection.diagnostics, inspection.counts, inspection.dimensions, output, originalInput)
 }
 
 export async function deliverMermaidDiagram(
   source: string,
   options: CliRenderOptions,
   profile: DiagramQualityProfile = 'professional',
+  originalInput?: string,
 ): Promise<MermaidDeliveryResult> {
   const artifact = await generateDiagramArtifact(source, options)
-  const receiptResult = await assessMermaidDiagram(source, artifact.result, profile, artifact.canonicalSvg)
+  const receiptResult = await assessMermaidDiagram(source, artifact.result, profile, artifact.canonicalSvg, originalInput)
   receiptResult.outputSha256 = await sha256(artifact.data)
   receiptResult.outputBytes = artifact.data instanceof Blob ? artifact.data.size : byteLength(artifact.data)
   receiptResult.dimensions = { width: artifact.outputWidth, height: artifact.outputHeight }
