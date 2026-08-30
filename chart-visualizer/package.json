@@ -1,7 +1,7 @@
 {
   "name": "fengsha-diagram-workbench",
   "private": true,
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "风沙的本地优先智能流程图与可视化画布工作台",
   "author": "风沙",
   "main": "dist-electron/main.cjs",

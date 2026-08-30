@@ -44,15 +44,18 @@ export function visualAiStreamPreview(source: string): string {
     const progress = operationCount
       ? `已整理 ${operationCount} 项局部修改`
       : `已整理 ${nodeCount} 个节点${edgeCount ? `、${edgeCount} 条连线` : ''}`
-    return `${summary || '正在生成专业图表结构'}\n\n正在生成结构化画布计划 · ${progress}`
+    return `${summary || '正在生成专业图表结构'}\n\n正在生成结构化画布计划 · ${progress}\n${plan}`
   }
   const code = partialJsonString(source, 'code')
   if (code) {
     if (code.trimStart().startsWith('<')) {
       return `${summary || '正在生成可视化画布'}\n\n正在生成 draw.io XML…\n${code.slice(-1800)}`
     }
-    return `${summary || '正在生成图表结构'}\n\n正在生成 Mermaid 源码…\n${code.slice(-1200)}`
+    if (/^\s*\{[\s\S]*"schemaVersion"\s*:\s*"fengsha\.plan\/v1"/.test(code)) {
+      return `${summary || '正在生成专业流程图'}\n\n正在生成结构化流程图 · 内容实时可见\n${code}`
+    }
+    return `${summary || '正在生成图表结构'}\n\n正在生成 Mermaid 源码…\n${code}`
   }
   if (summary) return `${summary}\n\n模型仍在继续输出 · 已接收 ${source.length} 字符`
-  return `已连接模型，正在流式接收内容 · ${source.length} 字符`
+  return `已连接模型，正在流式接收内容 · ${source.length} 字符\n${source}`
 }

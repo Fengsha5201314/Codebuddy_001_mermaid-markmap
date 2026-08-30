@@ -327,6 +327,109 @@ describe('AI service', () => {
     expect(request.stream).toBe(true)
   })
 
+  it('streams text from array content parts and Responses-style output events used by compatible proxies', async () => {
+    const first = '{"action":"explain","summary":"正在实时整理完整步骤。","code":"'
+    const second = 'flowchart LR\\n  A --> B","changes":[]}'
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: [{ type: 'text', text: first }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: second })}\n\n`,
+      'data: [DONE]\n\n',
+    ].join('')
+    const fetchMock = vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+    }))
+    const received: string[] = []
+
+    const result = await runAiRequestStream(config, payload, (delta) => received.push(delta), fetchMock as typeof fetch)
+
+    expect(received).toEqual([first, second])
+    expect(result.summary).toBe('正在实时整理完整步骤。')
+  })
+
+  it('joins multiple data lines in one SSE event and accepts a mislabelled event-stream content type', async () => {
+    const content = '{"action":"explain","summary":"多行事件仍可实时显示。","code":"flowchart LR\\n  A --> B","changes":[]}'
+    const serialized = JSON.stringify({ choices: [{ delta: { content } }] })
+    const splitAt = serialized.indexOf('{', 2)
+    const sse = `data: ${serialized.slice(0, splitAt)}\ndata: ${serialized.slice(splitAt)}\n\ndata: [DONE]\n\n`
+    const fetchMock = vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    }))
+    const received: string[] = []
+
+    const result = await runAiRequestStream(config, payload, (delta) => received.push(delta), fetchMock as typeof fetch)
+
+    expect(received.join('')).toBe(content)
+    expect(result.summary).toBe('多行事件仍可实时显示。')
+  })
+
+  it('accepts a non-stream JSON response mislabelled as text plain', async () => {
+    const content = '{"action":"explain","summary":"普通 JSON 兼容成功。","code":"flowchart LR\\n  A --> B","changes":[]}'
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: 'stop' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    }))
+    const received: string[] = []
+
+    const result = await runAiRequestStream(config, payload, (delta) => received.push(delta), fetchMock as typeof fetch)
+
+    expect(received).toEqual([content])
+    expect(result.summary).toBe('普通 JSON 兼容成功。')
+  })
+
+  it('sniffs SSE content even when a compatible proxy mislabels it as application json', async () => {
+    const content = '{"action":"explain","summary":"错误响应头仍可流式显示。","code":"flowchart LR\\n  A --> B","changes":[]}'
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n\n`
+    const fetchMock = vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    }))
+    const received: string[] = []
+
+    const result = await runAiRequestStream(config, payload, (delta) => received.push(delta), fetchMock as typeof fetch)
+
+    expect(received).toEqual([content])
+    expect(result.summary).toBe('错误响应头仍可流式显示。')
+  })
+
+  it('ignores Responses reasoning summary events and only emits public output text', async () => {
+    const content = '{"action":"explain","summary":"只显示最终回复。","code":"flowchart LR\\n  A --> B","changes":[]}'
+    const sse = [
+      `data: ${JSON.stringify({ type: 'response.reasoning_summary_text.done', text: 'private reasoning summary' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: content })}\n\n`,
+      'data: [DONE]\n\n',
+    ].join('')
+    const fetchMock = vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+    }))
+    const received: string[] = []
+
+    const result = await runAiRequestStream(config, payload, (delta) => received.push(delta), fetchMock as typeof fetch)
+
+    expect(received).toEqual([content])
+    expect(result.summary).toBe('只显示最终回复。')
+  })
+
+  it('applies the effective content limit to a plain-json fallback response', async () => {
+    const oversized = 'x'.repeat(2_000_000)
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: oversized } }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    }))
+
+    const received: string[] = []
+    await expect(runAiRequestStream(config, payload, (delta) => received.push(delta), fetchMock as typeof fetch)).rejects.toMatchObject({
+      code: 'AI_UPSTREAM_ERROR',
+    })
+    expect(received).toEqual([])
+  })
+
   it('automatically repairs a structured response that was truncated before valid JSON completed', async () => {
     const partial = '{"action":"edit","summary":"正在优化流程线条","code":{"version":1,"mode":"patch","operations":['
     const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: partial }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\ndata: [DONE]\n\n`

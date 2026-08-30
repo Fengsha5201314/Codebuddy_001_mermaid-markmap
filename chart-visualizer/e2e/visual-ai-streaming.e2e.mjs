@@ -37,24 +37,50 @@ try {
         response.writeHead(400).end()
         return
       }
-      const content = JSON.stringify({
+      const isDrawio = payload.messages?.some((message) => message.role === 'system' && message.content.includes('draw.io'))
+      const content = JSON.stringify(isDrawio ? {
         action: 'explain',
         summary: '已整理 AI 学习路径，先从基础概念开始。',
         code: '<mxfile><diagram><mxGraphModel><root><mxCell id="stream-visible" value="AI 基础概念" /></root></mxGraphModel></diagram></mxfile>',
         changes: [],
+      } : {
+        action: 'generate',
+        summary: '已实时整理电饭煲完整生产流程。',
+        code: {
+          schemaVersion: 'fengsha.plan/v1',
+          diagramType: 'workflow',
+          title: '电饭煲完整生产流程',
+          direction: 'LR',
+          lanes: [{ id: 'rd', label: '研发' }],
+          nodes: [{ id: 'design', type: 'process', label: '产品定义与研发', lane: 'rd', column: 0 }],
+          edges: [],
+        },
+        changes: ['新增产品定义与研发节点'],
       })
-      const splitAt = content.indexOf('AI 基础概念') + 'AI 基础概念'.length
-      const chunks = [content.slice(0, splitAt), content]
       response.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       })
+      if (isDrawio) {
+        const splitAt = content.indexOf('AI 基础概念') + 'AI 基础概念'.length
+        const chunks = [content.slice(0, splitAt), content]
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[0] } }] })}\n\n`)
+        setTimeout(() => {
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[1] } }] })}\n\n`)
+          response.end('data: [DONE]\n\n')
+        }, 3_000)
+        return
+      }
+      const firstEnd = content.indexOf(',"nodes"')
+      const secondEnd = content.indexOf('产品定义与研发') + '产品定义与研发'.length
+      const chunks = [content.slice(0, firstEnd), content.slice(firstEnd, secondEnd), content.slice(secondEnd)]
       response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[0] } }] })}\n\n`)
+      setTimeout(() => response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[1] } }] })}\n\n`), 900)
       setTimeout(() => {
-        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[1] } }] })}\n\n`)
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[2] } }] })}\n\n`)
         response.end('data: [DONE]\n\n')
-      }, 3_000)
+      }, 1_800)
     })
   })
   const providerAddress = await listen(providerServer)
@@ -96,6 +122,23 @@ try {
   })
   await page.reload({ waitUntil: 'domcontentloaded' })
 
+  await page.getByRole('button', { name: '打开 AI 助手' }).click()
+  await page.locator('.ai-assistant:not(.visual-ai-assistant)').waitFor({ state: 'visible', timeout: 8_000 })
+  const mermaidPrompt = page.locator('#ai-diagram-prompt')
+  await mermaidPrompt.fill('生成电饭煲从产品定义到交付售后的完整流程')
+  await page.locator('.ai-assistant:not(.visual-ai-assistant) .ai-send-button').click()
+  const mermaidLiveOutput = page.locator('.ai-assistant:not(.visual-ai-assistant) .ai-running-card pre')
+  await mermaidLiveOutput.waitFor({ state: 'visible', timeout: 8_000 })
+  await mermaidLiveOutput.filter({ hasText: 'schemaVersion' }).waitFor({ state: 'visible', timeout: 8_000 })
+  const firstMermaidFrame = await mermaidLiveOutput.textContent()
+  await mermaidLiveOutput.filter({ hasText: '产品定义与研发' }).waitFor({ state: 'visible', timeout: 8_000 })
+  const secondMermaidFrame = await mermaidLiveOutput.textContent()
+  if (!firstMermaidFrame?.includes('电饭煲完整生产流程') || firstMermaidFrame === secondMermaidFrame) {
+    throw new Error(`Mermaid plan preview did not progress beyond schemaVersion: ${firstMermaidFrame} -> ${secondMermaidFrame}`)
+  }
+  await page.locator('.ai-message-list article.assistant').filter({ hasText: '已实时整理电饭煲完整生产流程' }).waitFor({ state: 'visible', timeout: 8_000 })
+  await page.getByRole('button', { name: '关闭 AI 与工具面板' }).click()
+
   await page.getByRole('button', { name: /进入可视化画布/ }).click()
   await page.locator('.visual-canvas-frame.is-visible').waitFor({ state: 'visible', timeout: 30_000 })
   await page.getByRole('button', { name: /AI 助手/ }).click()
@@ -124,7 +167,7 @@ try {
   await page.locator('.ai-message-list article.assistant').filter({ hasText: '已整理 AI 学习路径' }).waitFor({ state: 'visible', timeout: 8_000 })
   if (await page.locator('.ai-error-card').count()) throw new Error('Successful streaming request displayed an error card.')
 
-  process.stdout.write(`${JSON.stringify({ promptCleared: true, liveXmlVisible: true, panelClosedDuringRequest: true, resultRecoveredAfterReopen: true, completedWithoutError: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ mermaidPlanAdvancedPastSchemaVersion: true, promptCleared: true, liveXmlVisible: true, panelClosedDuringRequest: true, resultRecoveredAfterReopen: true, completedWithoutError: true })}\n`)
 } finally {
   await application?.close().catch(() => undefined)
   await new Promise((resolve) => providerServer?.close(() => resolve())).catch(() => undefined)

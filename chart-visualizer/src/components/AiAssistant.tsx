@@ -32,6 +32,7 @@ import { AiApiError, getAiStatus, requestAiChangeStream } from '@/lib/ai-client'
 import type { AiAttachment } from '@/lib/ai-contract'
 import { DEFAULT_AI_DIAGRAM_ACTION, runAiDiagramWorkflow } from '@/lib/ai-diagram-workflow'
 import { appendAiPrompt, type AiPromptTemplate } from '@/lib/ai-prompt-templates'
+import { visualAiStreamPreview } from '@/lib/ai-stream-preview'
 import { renderDiagram } from '@/lib/diagram-engine'
 import {
   assessMermaidDiagram,
@@ -96,37 +97,6 @@ function readableError(error: unknown): string {
   if (error instanceof AiApiError) return error.message
   if (error instanceof Error) return error.message
   return 'AI 请求失败，请稍后重试。'
-}
-
-function readStreamingJsonField(source: string, field: string): string {
-  const marker = source.indexOf(`"${field}"`)
-  if (marker < 0) return ''
-  const colon = source.indexOf(':', marker + field.length + 2)
-  const quote = colon >= 0 ? source.indexOf('"', colon + 1) : -1
-  if (quote < 0) return ''
-  let value = ''
-  let escaped = false
-  for (let index = quote + 1; index < source.length; index += 1) {
-    const character = source[index]
-    if (escaped) {
-      value += character === 'n' ? '\n' : character === 't' ? '\t' : character
-      escaped = false
-    } else if (character === '\\') {
-      escaped = true
-    } else if (character === '"') {
-      break
-    } else {
-      value += character
-    }
-  }
-  return value
-}
-
-function streamingPreview(source: string): string {
-  const summary = readStreamingJsonField(source, 'summary')
-  const code = readStreamingJsonField(source, 'code')
-  if (code) return `${summary || '正在生成图表'}\n\n正在生成 Mermaid 源码…\n${code.slice(-2600)}`
-  return summary || '已连接模型，正在接收内容…'
 }
 
 export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }: AiAssistantProps) {
@@ -425,14 +395,14 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
         {running && (
           <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite">
             <header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选源码和具体错误交给 AI，无需手工检查。' : streamText ? '内容会边生成边显示，完成后自动检查图表。' : '已发送请求，正在等待模型返回首段内容。'}</small></span></header>
-            {streamText && <pre>{streamingPreview(streamText)}<i aria-hidden="true" /></pre>}
+            {streamText && <pre>{visualAiStreamPreview(streamText)}<i aria-hidden="true" /></pre>}
           </div>
         )}
 
         {!running && requestError && streamText && (
           <div className="ai-running-card interrupted">
             <header><AlertCircle size={18} /><span><strong>已保留中断前的输出</strong><small>你仍可查看模型已经返回的文字，重新发送后会从新请求继续。</small></span></header>
-            <pre>{streamingPreview(streamText)}</pre>
+            <pre>{visualAiStreamPreview(streamText)}</pre>
           </div>
         )}
 

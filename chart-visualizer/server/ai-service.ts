@@ -751,10 +751,11 @@ async function repairIncompleteModelOutput(
   })
   const body = await upstreamJson(response)
   if (!response.ok) throw upstreamError(provider.label, body)
-  const content = body && typeof body === 'object'
+  const rawContent = body && typeof body === 'object'
     ? (body as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message?.content
     : undefined
-  if (typeof content !== 'string' || !content.trim()) {
+  const content = textFromStreamValue(rawContent)
+  if (!content.trim()) {
     throw new AiServiceError('模型自动补全后仍未返回文本结果，请重新发送。', 'AI_INVALID_OUTPUT', 502)
   }
   try {
@@ -804,8 +805,8 @@ export async function runAiRequest(
   const choice = body && typeof body === 'object'
     ? (body as { choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown }> }).choices?.[0]
     : undefined
-  const content = choice?.message?.content
-  if (typeof content !== 'string') {
+  const content = textFromStreamValue(choice?.message?.content)
+  if (!content) {
     throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
   }
   try {
@@ -829,7 +830,40 @@ interface OpenAiStreamChunk {
     message?: { content?: unknown }
     finish_reason?: unknown
   }>
+  type?: unknown
+  delta?: unknown
+  text?: unknown
   error?: { message?: unknown }
+}
+
+function textFromContentPart(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object') return ''
+  const part = value as { type?: unknown; text?: unknown; content?: unknown; value?: unknown }
+  if (typeof part.type === 'string' && !['text', 'output_text', 'input_text'].includes(part.type)) return ''
+  if (typeof part.text === 'string') return part.text
+  if (part.text && typeof part.text === 'object' && typeof (part.text as { value?: unknown }).value === 'string') {
+    return (part.text as { value: string }).value
+  }
+  if (typeof part.content === 'string') return part.content
+  if (typeof part.value === 'string') return part.value
+  return ''
+}
+
+function textFromStreamValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(textFromContentPart).join('')
+  return textFromContentPart(value)
+}
+
+function streamChunkText(chunk: OpenAiStreamChunk): string {
+  const choice = chunk.choices?.[0]
+  const choiceText = textFromStreamValue(choice?.delta?.content)
+    || textFromStreamValue(choice?.message?.content)
+  if (choiceText) return choiceText
+  if (chunk.type === 'response.output_text.delta') return textFromStreamValue(chunk.delta)
+  if (chunk.type === 'response.output_text.done') return textFromStreamValue(chunk.text)
+  if (typeof chunk.type === 'string') return ''
+  return textFromStreamValue(chunk.text)
 }
 
 function completedAiResponse(payload: AiPayload, content: string) {
@@ -877,29 +911,6 @@ export async function runAiRequestStream(
 
     if (!response.ok) throw upstreamError(provider.label, await upstreamJson(response))
 
-    if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
-      const body = await upstreamJson(response)
-      const choice = body && typeof body === 'object'
-        ? (body as OpenAiStreamChunk).choices?.[0]
-        : undefined
-      const content = choice?.message?.content
-      if (typeof content !== 'string') throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
-      await onDelta(content)
-      try {
-        return completedAiResponse(payload, content)
-      } catch (error) {
-        if (!invalidStructuredOutput(error)) throw error
-        return repairIncompleteModelOutput(
-          provider,
-          payload,
-          content,
-          typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined,
-          fetchImpl,
-          streamTimeout.signal,
-        )
-      }
-    }
-
     if (!response.body) throw new AiServiceError('AI 流式响应不可读取。', 'AI_UPSTREAM_ERROR', 502)
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
@@ -907,11 +918,12 @@ export async function runAiRequestStream(
     let content = ''
     let receivedBytes = 0
     let finishReason: string | undefined
+    let eventData: string[] = []
+    let rawStreamText = ''
+    let detectedProtocol: 'unknown' | 'sse' | 'json' = 'unknown'
 
-    const consumeLine = async (rawLine: string) => {
-      const line = rawLine.trim()
-      if (!line.startsWith('data:')) return
-      const data = line.slice(5).trim()
+    const consumeEvent = async (dataLines: string[]) => {
+      const data = dataLines.join('\n').trim()
       if (!data || data === '[DONE]') return
       let chunk: OpenAiStreamChunk
       try {
@@ -922,8 +934,8 @@ export async function runAiRequestStream(
       if (typeof chunk.error?.message === 'string') throw upstreamError(provider.label, chunk)
       const choice = chunk.choices?.[0]
       if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
-      const delta = choice?.delta?.content
-      if (typeof delta !== 'string' || !delta) return
+      const delta = streamChunkText(chunk)
+      if (!delta) return
       let appended = delta
       if (delta.startsWith(content)) {
         appended = delta.slice(content.length)
@@ -936,19 +948,49 @@ export async function runAiRequestStream(
       if (Buffer.byteLength(content, 'utf8') > MAX_UPSTREAM_CONTENT_BYTES) {
         throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
       }
-      if (appended) await onDelta(appended)
+      if (appended) {
+        streamTimeout.refresh()
+        await onDelta(appended)
+      }
+    }
+
+    const consumeLine = async (rawLine: string) => {
+      const line = rawLine.replace(/\r$/, '')
+      if (!line) {
+        if (eventData.length) {
+          const completeEvent = eventData
+          eventData = []
+          await consumeEvent(completeEvent)
+        }
+        return
+      }
+      if (line.startsWith(':')) return
+      if (line.startsWith('data:')) eventData.push(line.slice(5).replace(/^ /, ''))
     }
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      streamTimeout.refresh()
       receivedBytes += value.byteLength
       if (receivedBytes > MAX_UPSTREAM_STREAM_BYTES) {
         await reader.cancel()
         throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
       }
-      pending += decoder.decode(value, { stream: true })
+      const decoded = decoder.decode(value, { stream: true })
+      rawStreamText += decoded
+      pending += decoded
+      if (detectedProtocol === 'unknown') {
+        const prefix = rawStreamText.trimStart()
+        if (/^(?:data:|event:|id:|retry:|:)/.test(prefix)) detectedProtocol = 'sse'
+        else if (/^[\[{]/.test(prefix)) detectedProtocol = 'json'
+        else if (prefix.length >= 4096) {
+          detectedProtocol = /(?:^|\n)(?:data:|event:|id:|retry:|:)/.test(prefix) ? 'sse' : 'json'
+        }
+      }
+      if (detectedProtocol === 'json' && receivedBytes > MAX_UPSTREAM_CONTENT_BYTES) {
+        await reader.cancel()
+        throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
+      }
       let newline = pending.indexOf('\n')
       while (newline >= 0) {
         const line = pending.slice(0, newline)
@@ -957,8 +999,32 @@ export async function runAiRequestStream(
         newline = pending.indexOf('\n')
       }
     }
-    pending += decoder.decode()
+    const finalDecoded = decoder.decode()
+    rawStreamText += finalDecoded
+    pending += finalDecoded
     if (pending.trim()) await consumeLine(pending)
+    if (eventData.length) await consumeEvent(eventData)
+    if (!content && /^\s*[\[{]/.test(rawStreamText)) {
+      let body: OpenAiStreamChunk | null = null
+      try {
+        body = JSON.parse(rawStreamText) as OpenAiStreamChunk
+      } catch {
+        // A non-JSON body continues to the stable empty-content error below.
+      }
+      if (body) {
+        const fallbackContent = streamChunkText(body)
+        const fallbackChoice = body.choices?.[0]
+        if (typeof fallbackChoice?.finish_reason === 'string') finishReason = fallbackChoice.finish_reason
+        if (fallbackContent) {
+          if (Buffer.byteLength(fallbackContent, 'utf8') > MAX_UPSTREAM_CONTENT_BYTES) {
+            throw new AiServiceError('AI 服务返回内容过大。', 'AI_UPSTREAM_ERROR', 502)
+          }
+          content = fallbackContent
+          streamTimeout.refresh()
+          await onDelta(fallbackContent)
+        }
+      }
+    }
     if (!content) throw new AiServiceError('AI 没有返回文本结果。', 'AI_INVALID_OUTPUT', 502)
     try {
       return completedAiResponse(payload, content)

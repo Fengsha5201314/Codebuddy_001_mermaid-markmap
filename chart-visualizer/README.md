@@ -9,6 +9,9 @@
 - 普通用户：[桌面版用户指南](docs/user-guide.md)
 - AI、脚本与自动化调用：[CLI 图文使用说明](docs/cli-guide.md)
 - 系统维护人员：[产品结构与数据流](docs/architecture.md)
+- 本次升级：[v1.9.1 实时流式输出与兼容性修复](docs/release-v1.9.1.md)
+
+![v1.9.1 升级全景图](docs/assets/fengsha-v1.9.1-upgrade-overview.png)
 
 安装 v1.9.0 或更高版本后，在 PowerShell、CMD、Codex 或 Claude Code 中运行：
 

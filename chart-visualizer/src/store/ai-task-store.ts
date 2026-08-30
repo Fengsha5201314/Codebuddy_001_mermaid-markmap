@@ -28,7 +28,7 @@ interface AiTaskState {
 interface AiTaskRuntime {
   controller: AbortController
   streamBuffer: string
-  streamFrame: number
+  streamFlushTimer: number
 }
 
 const runtimes = new Map<string, AiTaskRuntime>()
@@ -77,11 +77,11 @@ export function beginAiTask(
   const existing = runtimes.get(taskKey)
   if (existing) {
     existing.controller.abort('replaced')
-    window.cancelAnimationFrame(existing.streamFrame)
+    window.clearTimeout(existing.streamFlushTimer)
   }
 
   const controller = new AbortController()
-  runtimes.set(taskKey, { controller, streamBuffer: '', streamFrame: 0 })
+  runtimes.set(taskKey, { controller, streamBuffer: '', streamFlushTimer: 0 })
   useAiTaskStore.getState().patchTask(taskKey, {
     engine,
     documentId,
@@ -108,19 +108,19 @@ export function appendAiTaskDelta(taskKey: string, delta: string): void {
   const runtime = runtimes.get(taskKey)
   if (!runtime || runtime.controller.signal.aborted) return
   runtime.streamBuffer += delta
-  if (runtime.streamFrame) return
-  runtime.streamFrame = window.requestAnimationFrame(() => {
-    runtime.streamFrame = 0
+  if (runtime.streamFlushTimer) return
+  runtime.streamFlushTimer = window.setTimeout(() => {
+    runtime.streamFlushTimer = 0
     if (runtimes.get(taskKey) !== runtime) return
     patchAiTask(taskKey, { streamText: runtime.streamBuffer })
-  })
+  }, 32)
 }
 
 export function setAiTaskStage(taskKey: string, stage: AiWorkflowStage): void {
   const runtime = runtimes.get(taskKey)
   if (stage === 'repairing' && runtime) {
-    window.cancelAnimationFrame(runtime.streamFrame)
-    runtime.streamFrame = 0
+    window.clearTimeout(runtime.streamFlushTimer)
+    runtime.streamFlushTimer = 0
     runtime.streamBuffer = ''
     patchAiTask(taskKey, { workflowStage: stage, streamText: '' })
     return
@@ -135,7 +135,7 @@ export function stopAiTask(taskKey: string): void {
 export function finishAiTask(taskKey: string, controller: AbortController): void {
   const runtime = runtimes.get(taskKey)
   if (!runtime || runtime.controller !== controller) return
-  window.cancelAnimationFrame(runtime.streamFrame)
+  window.clearTimeout(runtime.streamFlushTimer)
   const streamText = runtime.streamBuffer || useAiTaskStore.getState().tasks[taskKey]?.streamText || ''
   runtimes.delete(taskKey)
   patchAiTask(taskKey, {
@@ -148,7 +148,7 @@ export function finishAiTask(taskKey: string, controller: AbortController): void
 export function resetAiTaskStoreForTests(): void {
   for (const runtime of runtimes.values()) {
     runtime.controller.abort('test-reset')
-    window.cancelAnimationFrame(runtime.streamFrame)
+    window.clearTimeout(runtime.streamFlushTimer)
   }
   runtimes.clear()
   useAiTaskStore.setState({ tasks: {} })
