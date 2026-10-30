@@ -302,7 +302,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
 
   const repairCellVisibility = () => {
     if (previewCode || visibleError || !displayed) {
-      showCanvasFeedback(previewCode ? '请先应用 AI 候选，再修复当前画布' : '请先修正源码语法后再检测')
+      showCanvasFeedback(previewCode ? '请先应用 AI 草稿，再修复当前画布' : '请先修正源码语法后再检测')
       return
     }
     const renderedRoot = viewportRef.current?.querySelector('[data-rendered-diagram]')
@@ -328,7 +328,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
     event.stopPropagation()
 
     if (previewCode) {
-      showCanvasFeedback('这是尚未应用的 AI 候选，请先在右侧确认应用')
+      showCanvasFeedback('这是待确认写入的 AI 草稿，请在右侧点击“确认写入”')
       return
     }
 
@@ -368,7 +368,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
       <div className="panel-titlebar preview-titlebar">
         <div className="panel-title">
           <Focus size={15} />
-          <strong>{previewCode ? 'AI 候选预览' : '实时预览'}</strong>
+          <strong>{previewCode ? 'AI 草稿预览' : '实时预览'}</strong>
           {rendering ? (
             <span className="render-badge pending"><LoaderCircle size={12} className="spin" />渲染中</span>
           ) : visibleError ? (
@@ -377,7 +377,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
             <span className="render-badge success"><CheckCircle2 size={12} />{renderTime} ms</span>
           )}
           {!previewCode && <span className="preview-edit-badge"><PencilLine size={11} />双击文字可编辑</span>}
-          {previewCode && <span className="ai-candidate-preview-badge"><Sparkles size={11} />尚未应用</span>}
+          {previewCode && <span className="ai-candidate-preview-badge"><Sparkles size={11} />待确认写入</span>}
         </div>
         <div className="canvas-actions">
           {previewCode && onExitPreview && <button className="show-source-action" onClick={onExitPreview} title="返回当前图" aria-label="返回当前图"><RotateCcw size={15} /><span>返回当前图</span></button>}
@@ -539,7 +539,7 @@ export function PreviewCanvas({ onResult, onError, onFocusError, onShowSource, p
             <TriangleAlert size={17} />
             <span>
               <strong>{visibleError.line ? `第 ${visibleError.line} 行：` : ''}{visibleError.message}</strong>
-              <small>{previewCode ? '候选预览异常，点击返回当前图。' : lastGoodResult ? '当前保留上一次成功预览，点击定位源码。' : '点击返回源码检查。'}</small>
+              <small>{previewCode ? '草稿预览异常，点击返回当前图。' : lastGoodResult ? '当前保留上一次成功预览，点击定位源码。' : '点击返回源码检查。'}</small>
             </span>
           </button>
         )}

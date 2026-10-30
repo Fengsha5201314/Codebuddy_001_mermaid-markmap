@@ -272,14 +272,14 @@ describe('Visual AI composer', () => {
       await Promise.resolve()
     })
 
-    expect(host.textContent).toContain('候选已通过专业检查')
+    expect(host.textContent).toContain('图表草稿已生成 · 检查通过')
     await act(async () => {
       host.querySelector<HTMLButtonElement>('.ai-action-buttons .primary')!.click()
       await Promise.resolve()
     })
     expect(onApplyXml).toHaveBeenCalledOnce()
-    expect(host.textContent).toContain('正在将候选应用到画布')
-    expect(host.textContent).not.toContain('候选已应用到可视化画布')
+    expect(host.textContent).toContain('正在将草稿应用到画布')
+    expect(host.textContent).not.toContain('草稿已应用到可视化画布')
     const conversationState = useAiConversationStore.getState()
     const applyingThreadId = conversationState.activeThreadByProject[document.projectId]
     expect(host.querySelector<HTMLButtonElement>('.ai-delete-chat')?.disabled).toBe(true)
@@ -301,20 +301,20 @@ describe('Visual AI composer', () => {
       rejectApply?.(new Error('draw.io 导出超时'))
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('候选应用失败，原画布已保留：draw.io 导出超时')
+    expect(host.textContent).toContain('草稿应用失败，原画布已保留：draw.io 导出超时')
     expect(host.textContent).toContain('已生成采购审批流程')
-    expect(host.textContent).not.toContain('候选已应用到可视化画布')
+    expect(host.textContent).not.toContain('草稿已应用到可视化画布')
     await act(async () => {
       host.querySelector<HTMLButtonElement>('.ai-action-buttons .primary')!.click()
       await Promise.resolve()
     })
     expect(onApplyXml).toHaveBeenCalledTimes(2)
-    expect(host.textContent).toContain('正在将候选应用到画布')
+    expect(host.textContent).toContain('正在将草稿应用到画布')
     await act(async () => {
       resolveApply?.()
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('候选已应用到可视化画布')
+    expect(host.textContent).toContain('草稿已应用到可视化画布')
   })
 
   it('adds a clipboard screenshot as an image attachment when pasted into the prompt', async () => {

@@ -378,7 +378,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
         projectThreads={projectThreads}
         activeThread={activeThread}
         subtitle="Mermaid 与可视化画布共享"
-        emptyMessage="说明目标，AI 会先结合当前图讨论和归纳；确认方向后再生成候选。"
+        emptyMessage="说明目标，AI 会先结合当前图讨论和归纳；确认方向后再生成草稿。"
         templates={promptTemplates}
         running={running}
         activityKey={`${activeThread?.messages.length ?? 0}:${running}:${streamText.length}:${candidate?.response.code.length ?? 0}:${requestError ?? ''}`}
@@ -394,7 +394,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
       >
         {running && (
           <div className={`ai-running-card ${streamText ? 'streaming' : ''}`} aria-live="polite">
-            <header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把候选源码和具体错误交给 AI，无需手工检查。' : streamText ? '内容会边生成边显示，完成后自动检查图表。' : '已发送请求，正在等待模型返回首段内容。'}</small></span></header>
+            <header><LoaderCircle size={18} className="spin" /><span><strong>{runningTitle}</strong><small>{workflowStage === 'repairing' ? '系统已把草稿源码和具体错误交给 AI，无需手工检查。' : streamText ? '内容会边生成边显示，完成后自动检查图表。' : '已发送请求，正在等待模型返回首段内容。'}</small></span></header>
             {streamText && <pre>{visualAiStreamPreview(streamText)}<i aria-hidden="true" /></pre>}
           </div>
         )}
@@ -413,7 +413,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
             <header>
               <span className="ai-result-status">
                 {candidate.validationError || candidateStale || candidateConflict ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
-                <strong>{candidateStale ? '已有新意见，候选需要更新' : candidateConflict ? '当前图已变化，需要重新生成' : isExplanation ? '分析完成' : candidate.validationError ? '自动修复仍未通过' : candidate.repairAttempts ? '已自动修复并通过检查' : '候选已通过渲染检查'}</strong>
+                <strong>{candidateStale ? '已有新意见，草稿需要更新' : candidateConflict ? '当前图已变化，需要重新生成' : isExplanation ? '分析完成' : candidate.validationError ? '自动修复仍未通过' : candidate.repairAttempts ? '已自动修复并通过检查' : '图表草稿已生成 · 检查通过'}</strong>
               </span>
               <small>{candidate.response.provider === selectedModel?.provider ? selectedProviderLabel : providerLabels[candidate.response.provider]} · {candidate.response.model}</small>
             </header>
@@ -421,7 +421,7 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
             <QualityReceiptSummary receipt={candidate.qualityReceipt} />
             {!isExplanation && (
               <>
-                <div className="ai-diff-stats"><span className="added">+{candidate.added} 行</span><span className="removed">−{candidate.removed} 行</span><span>尚未写入源码</span></div>
+                <div className="ai-diff-stats"><span className="added">+{candidate.added} 行</span><span className="removed">−{candidate.removed} 行</span><span>图表已生成 · 尚未写入</span></div>
                 {candidate.response.changes.length > 0 && <ul className="ai-change-list">{candidate.response.changes.map((change, index) => <li key={`${change}-${index}`}><Check size={12} />{change}</li>)}</ul>}
                 {candidate.validationError && <p className="ai-validation-error">{candidate.validationError}</p>}
                 <details className="ai-code-preview" open={Boolean(candidate.validationError)}><summary><FileCode2 size={14} />查看生成的 Mermaid 源码</summary><pre>{candidate.response.code}</pre></details>
@@ -436,8 +436,8 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
           <div>
             {appliedBefore !== null ? <CheckCircle2 size={17} /> : candidateStale || candidateConflict || candidate?.validationError ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}
             <span>
-              <strong>{appliedBefore !== null ? '候选已应用到当前图' : candidateStale ? '先按新意见更新候选' : candidateConflict ? '画布已在候选生成后发生变化' : candidate?.validationError ? '候选仍需修复' : candidate ? '候选已校验，可以安全应用' : '已有对话共识，可以生成候选'}</strong>
-              <small>{appliedBefore !== null ? '应用前版本已自动保存，可立即撤销。' : candidate ? '当前图不会被直接覆盖。' : prompt.trim() ? '先发送输入框里的补充内容。' : '也可以继续输入，进一步补充细节。'}</small>
+              <strong>{appliedBefore !== null ? '草稿已应用到当前图' : candidateStale ? '先按新意见更新草稿' : candidateConflict ? '画布已在草稿生成后发生变化' : candidate?.validationError ? '草稿仍需修复' : candidate ? '图表草稿已生成，等待确认写入' : '讨论已就绪，点击下方生成图表'}</strong>
+              <small>{appliedBefore !== null ? '应用前版本已自动保存，可立即撤销。' : candidate ? '确认写入后才会替换当前图；放弃则保留原图。' : prompt.trim() ? '先发送输入框里的补充内容。' : '点击“生成图表草稿”开始绘图，也可继续补充需求。'}</small>
             </span>
           </div>
           <span className="ai-action-buttons">
@@ -445,14 +445,14 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
               <button type="button" onClick={() => { updateCode(appliedBefore); patchAiTask(taskKey, { appliedBefore: null }) }}><RotateCcw size={14} />撤销本次</button>
             ) : candidate ? (
               <>
-                <button type="button" onClick={() => { patchAiTask(taskKey, { candidate: null, candidateStale: false }); onPreviewCandidate?.(null) }}>放弃候选</button>
+                <button type="button" onClick={() => { patchAiTask(taskKey, { candidate: null, candidateStale: false }); onPreviewCandidate?.(null) }}>放弃草稿</button>
                 {candidate.validationError ? (
                   <button type="button" className="primary" onClick={() => void retryCandidateRepair()}><RefreshCw size={14} />再次修复</button>
                 ) : candidateStale || candidateConflict ? (
                   <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已确认的对话和最新要求重新生成候选图表。', appendUser: false })}><RefreshCw size={14} />重新生成</button>
                 ) : (
                   <>
-                    {onPreviewCandidate && <button type="button" onClick={() => onPreviewCandidate(candidate.response.code)}>查看候选</button>}
+                    {onPreviewCandidate && <button type="button" onClick={() => onPreviewCandidate(candidate.response.code)}>预览草稿</button>}
                     <button type="button" className="primary" disabled={!canApply} onClick={() => {
                       const quality = candidate.qualityReceipt!
                       patchAiTask(taskKey, { appliedBefore: active.code })
@@ -466,12 +466,12 @@ export function AiAssistant({ renderError, onOpenSettings, onPreviewCandidate }:
                         checksTotal: quality.checks.length,
                       })
                       onPreviewCandidate?.(null)
-                    }}><Check size={14} />应用到画布</button>
+                    }}><Check size={14} />确认写入</button>
                   </>
                 )}
               </>
             ) : (
-              <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成候选图表。', appendUser: false })}><Send size={14} />生成候选</button>
+              <button type="button" className="primary" disabled={!canGenerateFromConversation} onClick={() => void run('generate', { prompt: '请根据以上已经确认的项目对话生成候选图表。', appendUser: false })}><Send size={14} />生成图表草稿</button>
             )}
           </span>
         </section>
